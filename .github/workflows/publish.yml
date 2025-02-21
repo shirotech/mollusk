@@ -1,0 +1,61 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+
+env:
+  NIGHTLY_TOOLCHAIN: nightly-2024-11-22
+  SOLANA_VERSION: 2.2.0
+  TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+
+jobs:
+  pre_publish:
+    name: Prepublish
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-build-sbf-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-build-sbf-
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.NIGHTLY_TOOLCHAIN }}
+          components: rustfmt, clippy
+      - uses: metaplex-foundation/actions/install-solana@v1
+        with:
+          cache: true
+          version: ${{ env.SOLANA_VERSION }}
+      - name: Prepublish
+        shell: bash
+        run: bash scripts/prepublish.sh
+
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    needs: pre_publish
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-build-sbf-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-build-sbf-
+      - uses: metaplex-foundation/actions/install-solana@v1
+        with:
+          cache: true
+          version: ${{ env.SOLANA_VERSION }}
+      - name: Publish
+        shell: bash
+        run: bash scripts/publish.sh --locked
