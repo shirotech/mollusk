@@ -1,13 +1,12 @@
 //! Compute unit benchmarking results and checks.
 
 use {
-    chrono::{DateTime, Utc},
     mollusk_svm::result::InstructionResult,
     num_format::{Locale, ToFormattedString},
     std::path::Path,
 };
 
-pub(crate) struct MolluskComputeUnitBenchResult<'a> {
+pub struct MolluskComputeUnitBenchResult<'a> {
     name: &'a str,
     cus_consumed: u64,
 }
@@ -19,8 +18,9 @@ impl<'a> MolluskComputeUnitBenchResult<'a> {
     }
 }
 
-pub(crate) fn write_results(
+pub fn write_results(
     out_dir: &Path,
+    table_header: &str,
     solana_version: &str,
     results: Vec<MolluskComputeUnitBenchResult>,
 ) {
@@ -38,7 +38,7 @@ pub(crate) fn write_results(
         .map(|content| parse_last_md_table(content));
 
     // Prepare to write a new table.
-    let mut md_table = md_header(solana_version);
+    let mut md_table = md_header(table_header, solana_version);
 
     // Evaluate the results against the previous table, if any.
     // If there are changes, write a new table.
@@ -80,24 +80,23 @@ pub(crate) fn write_results(
     }
 }
 
-fn md_header(solana_version: &str) -> String {
-    let now: DateTime<Utc> = Utc::now();
+fn md_header(table_header: &str, solana_version: &str) -> String {
     format!(
-        r#"#### Compute Units: {}
+        r#"#### {}
 
 Solana CLI Version: {}
 
 | Name | CUs | Delta |
 |------|------|-------|
 "#,
-        now, solana_version,
+        table_header, solana_version,
     )
 }
 
 fn parse_last_md_table(content: &str) -> Vec<MolluskComputeUnitBenchResult> {
     let mut results = vec![];
 
-    for line in content.lines().skip(4) {
+    for line in content.lines().skip(6) {
         if line.starts_with("####") || line.is_empty() {
             break;
         }

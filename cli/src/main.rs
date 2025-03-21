@@ -8,6 +8,7 @@ use {
     clap::{Parser, Subcommand},
     config::ConfigFile,
     mollusk_svm::{result::Compare, Mollusk},
+    runner::CusReport,
     solana_pubkey::Pubkey,
     std::{fs, path::Path, str::FromStr},
 };
@@ -30,6 +31,14 @@ enum SubCommand {
         /// Path to the config file for validation checks.
         #[arg(short, long)]
         config: Option<String>,
+        /// Directory to write a compute unit consumption report.
+        #[arg(long)]
+        cus_report: Option<String>,
+        /// Table header for the compute unit consumption report.
+        ///
+        /// Note this flag is ignored if `cus_report` is not set.
+        #[arg(long)]
+        cus_report_table_header: Option<String>,
         /// Skip comparing compute unit consumption, but compare everything
         /// else.
         ///
@@ -72,6 +81,14 @@ enum SubCommand {
         /// Path to the config file for validation checks.
         #[arg(short, long)]
         config: Option<String>,
+        /// Directory to write a compute unit consumption report.
+        #[arg(long)]
+        cus_report: Option<String>,
+        /// Table header for the compute unit consumption report.
+        ///
+        /// Note this flag is ignored if `cus_report` is not set.
+        #[arg(long)]
+        cus_report_table_header: Option<String>,
         /// Skip comparing compute unit consumption, but compare everything
         /// else.
         ///
@@ -136,6 +153,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             fixture,
             program_id,
             config,
+            cus_report,
+            cus_report_table_header,
             ignore_compute_units,
             inputs_only,
             program_logs,
@@ -156,11 +175,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let fixtures = search_paths(&fixture, "fix")?;
 
-            Runner::new(checks, inputs_only, program_logs, proto, verbose).run_all(
-                None,
-                &mut mollusk,
-                &fixtures,
-            )?
+            Runner::new(
+                checks,
+                cus_report.map(|path| CusReport::new(path, cus_report_table_header)),
+                inputs_only,
+                program_logs,
+                proto,
+                verbose,
+            )
+            .run_all(None, &mut mollusk, &fixtures)?
         }
         SubCommand::RunTest {
             elf_path_source,
@@ -168,6 +191,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             fixture,
             program_id,
             config,
+            cus_report,
+            cus_report_table_header,
             ignore_compute_units,
             program_logs,
             proto,
@@ -194,6 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             Runner::new(
                 checks,
+                cus_report.map(|path| CusReport::new(path, cus_report_table_header)),
                 /* inputs_only */ true,
                 program_logs,
                 proto,
