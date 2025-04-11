@@ -17,7 +17,7 @@ repository = "https://github.com/anza-xyz/mollusk"
 readme = "README.md"
 license = "MIT"
 edition = "2021"
-version = "0.1.4"
+version = "0.1.5"
 
 [workspace.dependencies]
 agave-feature-set = "2.2.6"
@@ -29,16 +29,16 @@ clap = "4.5.4"
 criterion = "0.5.1"
 ed25519-dalek = "=1.0.1"
 libsecp256k1 = "0.6.0"
-mollusk-svm = { path = "harness", version = "0.1.4" }
-mollusk-svm-bencher = { path = "bencher", version = "0.1.4" }
-mollusk-svm-cli = { path = "cli", version = "0.1.4" }
-mollusk-svm-error = { path = "error", version = "0.1.4" }
-mollusk-svm-fuzz-fixture = { path = "fuzz/fixture", version = "0.1.4" }
-mollusk-svm-fuzz-fixture-firedancer = { path = "fuzz/fixture-fd", version = "0.1.4" }
-mollusk-svm-fuzz-fs = { path = "fuzz/fs", version = "0.1.4" }
-mollusk-svm-keys = { path = "keys", version = "0.1.4" }
-mollusk-svm-programs-memo = { path = "programs/memo", version = "0.1.4" }
-mollusk-svm-programs-token = { path = "programs/token", version = "0.1.4" }
+mollusk-svm = { path = "harness", version = "0.1.5" }
+mollusk-svm-bencher = { path = "bencher", version = "0.1.5" }
+mollusk-svm-cli = { path = "cli", version = "0.1.5" }
+mollusk-svm-error = { path = "error", version = "0.1.5" }
+mollusk-svm-fuzz-fixture = { path = "fuzz/fixture", version = "0.1.5" }
+mollusk-svm-fuzz-fixture-firedancer = { path = "fuzz/fixture-fd", version = "0.1.5" }
+mollusk-svm-fuzz-fs = { path = "fuzz/fs", version = "0.1.5" }
+mollusk-svm-keys = { path = "keys", version = "0.1.5" }
+mollusk-svm-programs-memo = { path = "programs/memo", version = "0.1.5" }
+mollusk-svm-programs-token = { path = "programs/token", version = "0.1.5" }
 num-format = "0.4.4"
 openssl = "0.10.72"
 prost = "0.9"
