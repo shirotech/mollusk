@@ -58,4 +58,4 @@ jobs:
           version: ${{ env.SOLANA_VERSION }}
       - name: Publish
         shell: bash
-        run: bash scripts/publish.sh --locked
+        run: bash scripts/publish.sh
