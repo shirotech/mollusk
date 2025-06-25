@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 NIGHTLY_TOOLCHAIN := nightly-2024-11-22
-SOLANA_VERSION := 2.2.0
+SOLANA_VERSION := 2.3.0
 
 .PHONY: audit build-test-programs prepublish publish format format-check \
 	clippy test check-features all-checks nightly-version solana-version
@@ -13,7 +13,6 @@ nightly-version:
 solana-version:
 	@echo $(SOLANA_VERSION)
 
-# Security audit with ignored advisories
 audit:
 	@cargo audit \
 		--ignore RUSTSEC-2022-0093 \
@@ -27,7 +26,6 @@ audit:
 # RUSTSEC-2024-0376: Remotely exploitable Denial of Service in Tonic
 # RUSTSEC-2025-0009: Some AES functions may panic when overflow checking is enabled
 
-# Build test programs
 build-test-programs:
 	@cargo build-sbf --manifest-path test-programs/cpi-target/Cargo.toml
 	@cargo build-sbf --manifest-path test-programs/custom-syscall/Cargo.toml
@@ -68,23 +66,21 @@ publish:
 	done && \
 	echo "All crates published successfully!"
 
-# Format code
 format:
-	@cargo +$(NIGHTLY_TOOLCHAIN) fmt --all
-
-# Check formatting
-format-check:
 	@cargo +$(NIGHTLY_TOOLCHAIN) fmt --all -- --check
 
-# Run clippy linter
+format-fix:
+	@cargo +$(NIGHTLY_TOOLCHAIN) fmt --all
+
 clippy:
 	@cargo +$(NIGHTLY_TOOLCHAIN) clippy --all --all-features --all-targets -- -D warnings
 
-# Check all feature combinations with cargo-hack
+clippy-fix:
+	@cargo +$(NIGHTLY_TOOLCHAIN) clippy --all --all-features --all-targets --fix --allow-dirty --allow-staged -- -D warnings
+
 check-features:
 	@cargo hack check --feature-powerset --no-dev-deps
 
-# Run tests
 test:
 	@$(MAKE) build-test-programs
 	@cargo test --all-features
@@ -92,7 +88,7 @@ test:
 # Run all checks in sequence
 all-checks:
 	@echo "Running all checks..."
-	@$(MAKE) format-check
+	@$(MAKE) format
 	@$(MAKE) clippy
 	@$(MAKE) check-features
 	@$(MAKE) test
