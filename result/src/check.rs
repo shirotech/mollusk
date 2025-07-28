@@ -253,7 +253,8 @@ impl InstructionResult {
                                     true,
                                     context.is_rent_exempt(
                                         resulting_account.lamports,
-                                        resulting_account.data.len()
+                                        resulting_account.data.len(),
+                                        resulting_account.owner,
                                     ),
                                 );
                             }
@@ -280,8 +281,11 @@ impl InstructionResult {
                 }
                 CheckType::AllRentExempt => {
                     for (pubkey, account) in &self.resulting_accounts {
-                        let is_rent_exempt =
-                            context.is_rent_exempt(account.lamports(), account.data().len());
+                        let is_rent_exempt = context.is_rent_exempt(
+                            account.lamports(),
+                            account.data().len(),
+                            account.owner,
+                        );
                         if !is_rent_exempt {
                             pass &= throw!(
                                 c,
