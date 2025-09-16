@@ -23,7 +23,7 @@ use {
 
 /// A fixture for invoking a single instruction against a simulated SVM
 /// program runtime environment, for a given program.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Fixture {
     /// The fixture inputs.
     pub input: Context,
@@ -112,7 +112,8 @@ mod tests {
     fn test_consistent_hashing() {
         const ITERATIONS: usize = 1000;
 
-        let compute_budget = ComputeBudget::default();
+        let compute_budget = ComputeBudget::new_with_defaults(true);
+
         let feature_set = FeatureSet::all_enabled();
         let sysvars = Sysvars::default();
         let program_id = Pubkey::default();
