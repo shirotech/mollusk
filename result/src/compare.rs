@@ -23,8 +23,6 @@ use {
 pub enum Compare {
     /// Validate compute units consumed.
     ComputeUnits,
-    /// Validate execution time.
-    ExecutionTime,
     /// Validate the program result.
     ProgramResult,
     /// Validate the return data.
@@ -221,9 +219,6 @@ impl InstructionResult {
                         self.compute_units_consumed,
                         b.compute_units_consumed
                     );
-                }
-                Compare::ExecutionTime => {
-                    pass &= compare!(c, "execution_time", self.execution_time, b.execution_time);
                 }
                 Compare::ProgramResult => {
                     pass &= compare!(c, "program_result", self.program_result, b.program_result);

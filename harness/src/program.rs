@@ -3,6 +3,7 @@
 use {
     agave_feature_set::FeatureSet,
     agave_syscalls::create_program_runtime_environment_v1,
+    ahash::{HashMap, HashMapExt},
     solana_account::Account,
     solana_compute_budget::compute_budget::ComputeBudget,
     solana_loader_v3_interface::state::UpgradeableLoaderState,
@@ -16,8 +17,6 @@ use {
     solana_rent::Rent,
     std::{
         cell::{RefCell, RefMut},
-        collections::HashMap,
-        rc::Rc,
         sync::Arc,
     },
 };
@@ -57,7 +56,7 @@ pub mod precompile_keys {
 }
 
 pub struct ProgramCache {
-    cache: Rc<RefCell<ProgramCacheForTxBatch>>,
+    cache: RefCell<ProgramCacheForTxBatch>,
     // This stinks, but the `ProgramCacheForTxBatch` doesn't offer a way to
     // access its entries directly. In order to make DX easier for those using
     // `MolluskContext`, we need to track entries added to the cache,
@@ -67,7 +66,7 @@ pub struct ProgramCache {
     // already.
     //
     // K: program ID, V: loader key
-    entries_cache: Rc<RefCell<HashMap<Pubkey, Pubkey>>>,
+    entries_cache: RefCell<HashMap<Pubkey, Pubkey>>,
     // The function registry (syscalls) to use for verifying and loading
     // program ELFs.
     pub program_runtime_environment: BuiltinProgram<InvokeContext<'static>>,
@@ -76,8 +75,8 @@ pub struct ProgramCache {
 impl ProgramCache {
     pub fn new(feature_set: &FeatureSet, compute_budget: &ComputeBudget) -> Self {
         let me = Self {
-            cache: Rc::new(RefCell::new(ProgramCacheForTxBatch::default())),
-            entries_cache: Rc::new(RefCell::new(HashMap::new())),
+            cache: RefCell::new(ProgramCacheForTxBatch::default()),
+            entries_cache: RefCell::new(HashMap::new()),
             program_runtime_environment: create_program_runtime_environment_v1(
                 &feature_set.runtime_features(),
                 &compute_budget.to_budget(),
@@ -151,46 +150,6 @@ impl ProgramCache {
     /// Load a program from the cache.
     pub fn load_program(&self, program_id: &Pubkey) -> Option<Arc<ProgramCacheEntry>> {
         self.cache.borrow().find(program_id)
-    }
-
-    // NOTE: These are only stubs. This will "just work", since Agave's SVM
-    // stubs out program accounts in transaction execution already, noting that
-    // the ELFs are already where they need to be: in the cache.
-    pub(crate) fn get_all_keyed_program_accounts(&self) -> Vec<(Pubkey, Account)> {
-        self.entries_cache
-            .borrow()
-            .iter()
-            .map(|(program_id, loader_key)| match *loader_key {
-                loader_keys::NATIVE_LOADER => {
-                    create_keyed_account_for_builtin_program(program_id, "I'm a stub!")
-                }
-                loader_keys::LOADER_V1 => (*program_id, create_program_account_loader_v1(&[])),
-                loader_keys::LOADER_V2 => (*program_id, create_program_account_loader_v2(&[])),
-                loader_keys::LOADER_V3 => {
-                    (*program_id, create_program_account_loader_v3(program_id))
-                }
-                loader_keys::LOADER_V4 => (*program_id, create_program_account_loader_v4(&[])),
-                _ => panic!("Invalid loader key: {}", loader_key),
-            })
-            .collect()
-    }
-
-    pub(crate) fn maybe_create_program_account(&self, pubkey: &Pubkey) -> Option<Account> {
-        // If it's found in the entries cache, create the proper program account based
-        // on the loader key.
-        self.entries_cache
-            .borrow()
-            .get(pubkey)
-            .map(|loader_key| match *loader_key {
-                loader_keys::NATIVE_LOADER => {
-                    create_keyed_account_for_builtin_program(pubkey, "I'm a stub!").1
-                }
-                loader_keys::LOADER_V1 => create_program_account_loader_v1(&[]),
-                loader_keys::LOADER_V2 => create_program_account_loader_v2(&[]),
-                loader_keys::LOADER_V3 => create_program_account_loader_v3(pubkey),
-                loader_keys::LOADER_V4 => create_program_account_loader_v4(&[]),
-                _ => panic!("Invalid loader key: {}", loader_key),
-            })
     }
 }
 

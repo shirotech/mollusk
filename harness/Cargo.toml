@@ -10,7 +10,7 @@ edition = { workspace = true }
 version = { workspace = true }
 
 [features]
-default = []
+default = ["all-builtins", "precompiles"]
 all-builtins = [
     "dep:solana-loader-v4-program",
     "dep:solana-stake-program",
@@ -24,7 +24,6 @@ fuzz-fd = [
     "dep:mollusk-svm-fuzz-fixture-firedancer",
     "dep:mollusk-svm-fuzz-fs",
 ]
-invocation-inspect-callback = []
 precompiles = ["dep:agave-precompiles"]
 serde = [
     "dep:serde",
@@ -35,6 +34,7 @@ serde = [
 agave-feature-set = { workspace = true }
 agave-precompiles = { workspace = true, optional = true }
 agave-syscalls = { workspace = true }
+ahash = { workspace = true }
 bincode = { workspace = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 mollusk-svm-error = { workspace = true }
@@ -66,6 +66,7 @@ solana-slot-hashes = { workspace = true }
 solana-stake-interface = { workspace = true }
 solana-stake-program = { workspace = true, optional = true }
 solana-svm-callback = { workspace = true }
+solana-svm-feature-set = { workspace = true }
 solana-svm-log-collector = { workspace = true }
 solana-svm-timings = { workspace = true }
 solana-system-program = { workspace = true }
@@ -86,7 +87,3 @@ solana-native-token = { workspace = true }
 solana-secp256k1-program = { workspace = true, features = ["bincode"] }
 solana-secp256r1-program = { workspace = true }
 solana-system-interface = { workspace = true }
-
-[[bench]]
-name = "ips"
-harness = false
