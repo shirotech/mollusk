@@ -48,10 +48,8 @@ impl From<Result<(), InstructionError>> for ProgramResult {
 pub struct InstructionResult {
     /// The number of compute units consumed by the instruction.
     pub compute_units_consumed: u64,
-    /// The time taken to execute the instruction.
-    pub execution_time: u64,
     /// The result code of the program's execution.
-    pub program_result: ProgramResult,
+    pub program_result: bool,
     /// The raw result of the program's execution.
     pub raw_result: Result<(), InstructionError>,
     /// The return data produced by the instruction, if any.
@@ -68,8 +66,7 @@ impl Default for InstructionResult {
     fn default() -> Self {
         Self {
             compute_units_consumed: 0,
-            execution_time: 0,
-            program_result: ProgramResult::Success,
+            program_result: true,
             raw_result: Ok(()),
             return_data: vec![],
             resulting_accounts: vec![],
@@ -88,7 +85,6 @@ impl InstructionResult {
 
     pub fn absorb(&mut self, other: Self) {
         self.compute_units_consumed += other.compute_units_consumed;
-        self.execution_time += other.execution_time;
         self.program_result = other.program_result;
         self.raw_result = other.raw_result;
         self.return_data = other.return_data;

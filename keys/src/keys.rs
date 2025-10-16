@@ -21,9 +21,9 @@
 //! <https://github.com/anza-xyz/agave/blob/c6e8239843af8e6301cd198e39d0a44add427bef/sdk/program/src/message/legacy.rs#L357>.
 
 use {
+    ahash::{HashMap, HashSet},
     solana_instruction::{AccountMeta, Instruction},
     solana_pubkey::Pubkey,
-    std::collections::{HashMap, HashSet},
 };
 
 /// Wrapper around a hashmap of account keys and their corresponding roles

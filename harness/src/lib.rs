@@ -443,8 +443,6 @@ pub mod account_store;
 mod compile_accounts;
 pub mod epoch_stake;
 pub mod file;
-#[cfg(any(feature = "fuzz", feature = "fuzz-fd"))]
-pub mod fuzz;
 pub mod program;
 pub mod sysvar;
 
@@ -452,29 +450,34 @@ pub mod sysvar;
 pub use mollusk_svm_result as result;
 #[cfg(any(feature = "fuzz", feature = "fuzz-fd"))]
 use mollusk_svm_result::Compare;
+use solana_clock::Clock;
+use solana_compute_budget::compute_budget::{
+    SVMTransactionExecutionBudget, SVMTransactionExecutionCost,
+};
 #[cfg(feature = "precompiles")]
 use solana_precompile_error::PrecompileError;
-#[cfg(feature = "invocation-inspect-callback")]
-use solana_transaction_context::InstructionAccount;
+use solana_program_runtime::sysvar_cache::SysvarCache;
+use solana_rent::{
+    Rent, DEFAULT_BURN_PERCENT, DEFAULT_EXEMPTION_THRESHOLD, DEFAULT_LAMPORTS_PER_BYTE_YEAR,
+};
+use solana_svm_feature_set::SVMFeatureSet;
+
+use crate::sysvar::Sysvars;
+
 use {
-    crate::{
-        account_store::AccountStore, compile_accounts::CompiledAccounts, epoch_stake::EpochStake,
-        program::ProgramCache, sysvar::Sysvars,
-    },
+    crate::{compile_accounts::CompiledAccounts, epoch_stake::EpochStake, program::ProgramCache},
     agave_feature_set::FeatureSet,
     mollusk_svm_error::error::{MolluskError, MolluskPanic},
-    mollusk_svm_result::{Check, CheckContext, Config, InstructionResult},
+    mollusk_svm_result::{CheckContext, Config, InstructionResult},
     solana_account::Account,
     solana_compute_budget::compute_budget::ComputeBudget,
     solana_hash::Hash,
-    solana_instruction::{AccountMeta, Instruction},
+    solana_instruction::Instruction,
     solana_program_runtime::invoke_context::{EnvironmentConfig, InvokeContext},
     solana_pubkey::Pubkey,
     solana_svm_callback::InvokeContextCallback,
-    solana_svm_log_collector::LogCollector,
     solana_svm_timings::ExecuteTimings,
     solana_transaction_context::TransactionContext,
-    std::{cell::RefCell, collections::HashSet, iter::once, rc::Rc},
 };
 
 pub(crate) const DEFAULT_LOADER_KEY: Pubkey = solana_sdk_ids::bpf_loader_upgradeable::id();
@@ -485,18 +488,16 @@ pub(crate) const DEFAULT_LOADER_KEY: Pubkey = solana_sdk_ids::bpf_loader_upgrade
 /// users can also directly access and modify them if they desire more control.
 pub struct Mollusk {
     pub config: Config,
-    pub compute_budget: ComputeBudget,
-    pub epoch_stake: EpochStake,
-    pub feature_set: FeatureSet,
-    pub logger: Option<Rc<RefCell<LogCollector>>>,
-    pub program_cache: ProgramCache,
-    pub sysvars: Sysvars,
 
-    /// The callback which can be used to inspect invoke_context
-    /// and extract low-level information such as bpf traces, transaction
-    /// context, detailed timings, etc.
-    #[cfg(feature = "invocation-inspect-callback")]
-    pub invocation_inspect_callback: Box<dyn InvocationInspectCallback>,
+    pub compute_budget: ComputeBudget,
+    budget_ex_budget: SVMTransactionExecutionBudget,
+    budget_ex_cost: SVMTransactionExecutionCost,
+
+    pub epoch_stake: EpochStake,
+    pub features: SVMFeatureSet,
+    pub feature_set: FeatureSet,
+    pub program_cache: ProgramCache,
+    pub sysvars_cache: SysvarCache,
 
     /// This field stores the slot only to be able to convert to and from FD
     /// fixtures and a Mollusk instance, since FD fixtures have a
@@ -505,30 +506,6 @@ pub struct Mollusk {
     /// programs comes from the sysvars.
     #[cfg(feature = "fuzz-fd")]
     pub slot: u64,
-}
-
-#[cfg(feature = "invocation-inspect-callback")]
-pub trait InvocationInspectCallback {
-    fn before_invocation(
-        &self,
-        program_id: &Pubkey,
-        instruction_data: &[u8],
-        instruction_accounts: &[InstructionAccount],
-        invoke_context: &InvokeContext,
-    );
-
-    fn after_invocation(&self, invoke_context: &InvokeContext);
-}
-
-#[cfg(feature = "invocation-inspect-callback")]
-pub struct EmptyInvocationInspectCallback;
-
-#[cfg(feature = "invocation-inspect-callback")]
-impl InvocationInspectCallback for EmptyInvocationInspectCallback {
-    fn before_invocation(&self, _: &Pubkey, _: &[u8], _: &[InstructionAccount], _: &InvokeContext) {
-    }
-
-    fn after_invocation(&self, _: &InvokeContext) {}
 }
 
 impl Default for Mollusk {
@@ -556,15 +533,16 @@ impl Default for Mollusk {
         let program_cache = ProgramCache::new(&feature_set, &compute_budget);
         Self {
             config: Config::default(),
-            compute_budget,
-            epoch_stake: EpochStake::default(),
-            feature_set,
-            logger: None,
-            program_cache,
-            sysvars: Sysvars::default(),
 
-            #[cfg(feature = "invocation-inspect-callback")]
-            invocation_inspect_callback: Box::new(EmptyInvocationInspectCallback {}),
+            compute_budget,
+            budget_ex_budget: compute_budget.to_budget(),
+            budget_ex_cost: compute_budget.to_cost(),
+
+            epoch_stake: EpochStake::default(),
+            features: feature_set.runtime_features(),
+            feature_set,
+            program_cache,
+            sysvars_cache: Sysvars::default().setup_sysvar_cache(&[]),
 
             #[cfg(feature = "fuzz-fd")]
             slot: 0,
@@ -574,8 +552,7 @@ impl Default for Mollusk {
 
 impl CheckContext for Mollusk {
     fn is_rent_exempt(&self, lamports: u64, space: usize, owner: Pubkey) -> bool {
-        owner.eq(&Pubkey::default()) && lamports == 0
-            || self.sysvars.rent.is_exempt(lamports, space)
+        owner.eq(&Pubkey::default()) && lamports == 0 || RENT.is_exempt(lamports, space)
     }
 }
 
@@ -675,9 +652,8 @@ impl Mollusk {
         self.program_cache.add_program(program_id, loader_key, elf);
     }
 
-    /// Warp the test environment to a slot by updating sysvars.
-    pub fn warp_to_slot(&mut self, slot: u64) {
-        self.sysvars.warp_to_slot(slot)
+    pub fn update_clock(&mut self, clock: &Clock) {
+        self.sysvars_cache.set_sysvar_for_tests(clock);
     }
 
     /// Process an instruction using the minified Solana Virtual Machine (SVM)
@@ -685,7 +661,7 @@ impl Mollusk {
     pub fn process_instruction(
         &self,
         instruction: &Instruction,
-        accounts: &[(Pubkey, Account)],
+        accounts: Vec<(Pubkey, Account)>,
     ) -> InstructionResult {
         let mut compute_units_consumed = 0;
         let mut timings = ExecuteTimings::default();
@@ -704,11 +680,11 @@ impl Mollusk {
             program_id_index,
             instruction_accounts,
             transaction_accounts,
-        } = crate::compile_accounts::compile_accounts(instruction, accounts, loader_key);
+        } = crate::compile_accounts::compile_accounts(instruction, &accounts, loader_key);
 
         let mut transaction_context = TransactionContext::new(
             transaction_accounts,
-            self.sysvars.rent.clone(),
+            RENT,
             self.compute_budget.max_instruction_stack_depth,
             self.compute_budget.max_instruction_trace_length,
         );
@@ -719,21 +695,19 @@ impl Mollusk {
                 epoch_stake: &self.epoch_stake,
                 feature_set: &self.feature_set,
             };
-            let runtime_features = self.feature_set.runtime_features();
-            let sysvar_cache = self.sysvars.setup_sysvar_cache(accounts);
             let mut invoke_context = InvokeContext::new(
                 &mut transaction_context,
                 &mut program_cache,
                 EnvironmentConfig::new(
                     Hash::default(),
-                    /* blockhash_lamports_per_signature */ 5000, // The default value
+                    5000,
                     &callback,
-                    &runtime_features,
-                    &sysvar_cache,
+                    &self.features,
+                    &self.sysvars_cache,
                 ),
-                self.logger.clone(),
-                self.compute_budget.to_budget(),
-                self.compute_budget.to_cost(),
+                None,
+                self.budget_ex_budget,
+                self.budget_ex_cost,
             );
 
             // Configure the next instruction frame for this invocation.
@@ -741,18 +715,10 @@ impl Mollusk {
                 .transaction_context
                 .configure_next_instruction_for_tests(
                     program_id_index,
-                    instruction_accounts.clone(),
+                    instruction_accounts,
                     &instruction.data,
                 )
                 .expect("failed to configure next instruction");
-
-            #[cfg(feature = "invocation-inspect-callback")]
-            self.invocation_inspect_callback.before_invocation(
-                &instruction.program_id,
-                &instruction.data,
-                &instruction_accounts,
-                &invoke_context,
-            );
 
             let result = if invoke_context.is_precompile(&instruction.program_id) {
                 invoke_context.process_precompile(
@@ -764,21 +730,18 @@ impl Mollusk {
                 invoke_context.process_instruction(&mut compute_units_consumed, &mut timings)
             };
 
-            #[cfg(feature = "invocation-inspect-callback")]
-            self.invocation_inspect_callback
-                .after_invocation(&invoke_context);
-
             result
         };
 
         let return_data = transaction_context.get_return_data().1.to_vec();
 
-        let resulting_accounts: Vec<(Pubkey, Account)> = if invoke_result.is_ok() {
+        let program_result = invoke_result.is_ok();
+        let resulting_accounts = if program_result {
             accounts
-                .iter()
+                .into_iter()
                 .map(|(pubkey, account)| {
                     transaction_context
-                        .find_index_of_account(pubkey)
+                        .find_index_of_account(&pubkey)
                         .map(|index| {
                             let resulting_account = transaction_context
                                 .accounts()
@@ -786,534 +749,27 @@ impl Mollusk {
                                 .unwrap()
                                 .clone()
                                 .into();
-                            (*pubkey, resulting_account)
+                            (pubkey, resulting_account)
                         })
-                        .unwrap_or((*pubkey, account.clone()))
+                        .unwrap_or((pubkey, account))
                 })
                 .collect()
         } else {
-            accounts.to_vec()
+            accounts
         };
 
         InstructionResult {
             compute_units_consumed,
-            execution_time: timings.details.execute_us.0,
-            program_result: invoke_result.clone().into(),
+            program_result,
             raw_result: invoke_result,
             return_data,
             resulting_accounts,
         }
     }
-
-    /// Process a chain of instructions using the minified Solana Virtual
-    /// Machine (SVM) environment. The returned result is an
-    /// `InstructionResult`, containing:
-    ///
-    /// * `compute_units_consumed`: The total compute units consumed across all
-    ///   instructions.
-    /// * `execution_time`: The total execution time across all instructions.
-    /// * `program_result`: The program result of the _last_ instruction.
-    /// * `resulting_accounts`: The resulting accounts after the _last_
-    ///   instruction.
-    pub fn process_instruction_chain(
-        &self,
-        instructions: &[Instruction],
-        accounts: &[(Pubkey, Account)],
-    ) -> InstructionResult {
-        let mut result = InstructionResult {
-            resulting_accounts: accounts.to_vec(),
-            ..Default::default()
-        };
-
-        for instruction in instructions {
-            let this_result = self.process_instruction(instruction, &result.resulting_accounts);
-
-            result.absorb(this_result);
-
-            if result.program_result.is_err() {
-                break;
-            }
-        }
-
-        result
-    }
-
-    /// Process an instruction using the minified Solana Virtual Machine (SVM)
-    /// environment, then perform checks on the result. Panics if any checks
-    /// fail.
-    ///
-    /// For `fuzz` feature only:
-    ///
-    /// If the `EJECT_FUZZ_FIXTURES` environment variable is set, this function
-    /// will convert the provided test to a fuzz fixture and write it to the
-    /// provided directory.
-    ///
-    /// ```ignore
-    /// EJECT_FUZZ_FIXTURES="./fuzz-fixtures" cargo test-sbf ...
-    /// ```
-    ///
-    /// You can also provide `EJECT_FUZZ_FIXTURES_JSON` to write the fixture in
-    /// JSON format.
-    ///
-    /// The `fuzz-fd` feature works the same way, but the variables require
-    /// the `_FD` suffix, in case both features are active together
-    /// (ie. `EJECT_FUZZ_FIXTURES_FD`). This will generate Firedancer fuzzing
-    /// fixtures, which are structured a bit differently than Mollusk's own
-    /// protobuf layouts.
-    pub fn process_and_validate_instruction(
-        &self,
-        instruction: &Instruction,
-        accounts: &[(Pubkey, Account)],
-        checks: &[Check],
-    ) -> InstructionResult {
-        let result = self.process_instruction(instruction, accounts);
-
-        #[cfg(any(feature = "fuzz", feature = "fuzz-fd"))]
-        fuzz::generate_fixtures_from_mollusk_test(self, instruction, accounts, &result);
-
-        result.run_checks(checks, &self.config, self);
-        result
-    }
-
-    /// Process a chain of instructions using the minified Solana Virtual
-    /// Machine (SVM) environment, then perform checks on the result.
-    /// Panics if any checks fail.
-    ///
-    /// For `fuzz` feature only:
-    ///
-    /// Similar to `process_and_validate_instruction`, if the
-    /// `EJECT_FUZZ_FIXTURES` environment variable is set, this function will
-    /// convert the provided test to a set of fuzz fixtures - each of which
-    /// corresponds to a single instruction in the chain - and write them to
-    /// the provided directory.
-    ///
-    /// ```ignore
-    /// EJECT_FUZZ_FIXTURES="./fuzz-fixtures" cargo test-sbf ...
-    /// ```
-    ///
-    /// You can also provide `EJECT_FUZZ_FIXTURES_JSON` to write the fixture in
-    /// JSON format.
-    ///
-    /// The `fuzz-fd` feature works the same way, but the variables require
-    /// the `_FD` suffix, in case both features are active together
-    /// (ie. `EJECT_FUZZ_FIXTURES_FD`). This will generate Firedancer fuzzing
-    /// fixtures, which are structured a bit differently than Mollusk's own
-    /// protobuf layouts.
-    pub fn process_and_validate_instruction_chain(
-        &self,
-        instructions: &[(&Instruction, &[Check])],
-        accounts: &[(Pubkey, Account)],
-    ) -> InstructionResult {
-        let mut result = InstructionResult {
-            resulting_accounts: accounts.to_vec(),
-            ..Default::default()
-        };
-
-        for (instruction, checks) in instructions.iter() {
-            let this_result = self.process_and_validate_instruction(
-                instruction,
-                &result.resulting_accounts,
-                checks,
-            );
-
-            result.absorb(this_result);
-
-            if result.program_result.is_err() {
-                break;
-            }
-        }
-
-        result
-    }
-
-    #[cfg(feature = "fuzz")]
-    /// Process a fuzz fixture using the minified Solana Virtual Machine (SVM)
-    /// environment.
-    ///
-    /// Fixtures provide an API to `decode` a raw blob, as well as read
-    /// fixtures from files. Those fixtures can then be provided to this
-    /// function to process them and get a Mollusk result.
-    ///
-    /// Note: This is a mutable method on `Mollusk`, since loading a fixture
-    /// into the test environment will alter `Mollusk` values, such as compute
-    /// budget and sysvars. However, the program cache remains unchanged.
-    ///
-    /// Therefore, developers can provision a `Mollusk` instance, set up their
-    /// desired program cache, and then run a series of fixtures against that
-    /// `Mollusk` instance (and cache).
-    pub fn process_fixture(
-        &mut self,
-        fixture: &mollusk_svm_fuzz_fixture::Fixture,
-    ) -> InstructionResult {
-        let fuzz::mollusk::ParsedFixtureContext {
-            accounts,
-            compute_budget,
-            feature_set,
-            instruction,
-            sysvars,
-        } = fuzz::mollusk::parse_fixture_context(&fixture.input);
-        self.compute_budget = compute_budget;
-        self.feature_set = feature_set;
-        self.sysvars = sysvars;
-        self.process_instruction(&instruction, &accounts)
-    }
-
-    #[cfg(feature = "fuzz")]
-    /// Process a fuzz fixture using the minified Solana Virtual Machine (SVM)
-    /// environment and compare the result against the fixture's effects.
-    ///
-    /// Fixtures provide an API to `decode` a raw blob, as well as read
-    /// fixtures from files. Those fixtures can then be provided to this
-    /// function to process them and get a Mollusk result.
-    ///
-    ///
-    /// Note: This is a mutable method on `Mollusk`, since loading a fixture
-    /// into the test environment will alter `Mollusk` values, such as compute
-    /// budget and sysvars. However, the program cache remains unchanged.
-    ///
-    /// Therefore, developers can provision a `Mollusk` instance, set up their
-    /// desired program cache, and then run a series of fixtures against that
-    /// `Mollusk` instance (and cache).
-    ///
-    /// Note: To compare the result against the entire fixture effects, pass
-    /// `&[FixtureCheck::All]` for `checks`.
-    pub fn process_and_validate_fixture(
-        &mut self,
-        fixture: &mollusk_svm_fuzz_fixture::Fixture,
-    ) -> InstructionResult {
-        let result = self.process_fixture(fixture);
-        InstructionResult::from(&fixture.output).compare_with_config(
-            &result,
-            &Compare::everything(),
-            &self.config,
-        );
-        result
-    }
-
-    #[cfg(feature = "fuzz")]
-    /// a specific set of checks.
-    ///
-    /// This is useful for when you may not want to compare the entire effects,
-    /// such as omitting comparisons of compute units consumed.
-    /// Process a fuzz fixture using the minified Solana Virtual Machine (SVM)
-    /// environment and compare the result against the fixture's effects using
-    /// a specific set of checks.
-    ///
-    /// This is useful for when you may not want to compare the entire effects,
-    /// such as omitting comparisons of compute units consumed.
-    ///
-    /// Fixtures provide an API to `decode` a raw blob, as well as read
-    /// fixtures from files. Those fixtures can then be provided to this
-    /// function to process them and get a Mollusk result.
-    ///
-    ///
-    /// Note: This is a mutable method on `Mollusk`, since loading a fixture
-    /// into the test environment will alter `Mollusk` values, such as compute
-    /// budget and sysvars. However, the program cache remains unchanged.
-    ///
-    /// Therefore, developers can provision a `Mollusk` instance, set up their
-    /// desired program cache, and then run a series of fixtures against that
-    /// `Mollusk` instance (and cache).
-    ///
-    /// Note: To compare the result against the entire fixture effects, pass
-    /// `&[FixtureCheck::All]` for `checks`.
-    pub fn process_and_partially_validate_fixture(
-        &mut self,
-        fixture: &mollusk_svm_fuzz_fixture::Fixture,
-        checks: &[Compare],
-    ) -> InstructionResult {
-        let result = self.process_fixture(fixture);
-        let expected = InstructionResult::from(&fixture.output);
-        result.compare_with_config(&expected, checks, &self.config);
-        result
-    }
-
-    #[cfg(feature = "fuzz-fd")]
-    /// Process a Firedancer fuzz fixture using the minified Solana Virtual
-    /// Machine (SVM) environment.
-    ///
-    /// Fixtures provide an API to `decode` a raw blob, as well as read
-    /// fixtures from files. Those fixtures can then be provided to this
-    /// function to process them and get a Mollusk result.
-    ///
-    /// Note: This is a mutable method on `Mollusk`, since loading a fixture
-    /// into the test environment will alter `Mollusk` values, such as compute
-    /// budget and sysvars. However, the program cache remains unchanged.
-    ///
-    /// Therefore, developers can provision a `Mollusk` instance, set up their
-    /// desired program cache, and then run a series of fixtures against that
-    /// `Mollusk` instance (and cache).
-    pub fn process_firedancer_fixture(
-        &mut self,
-        fixture: &mollusk_svm_fuzz_fixture_firedancer::Fixture,
-    ) -> InstructionResult {
-        let fuzz::firedancer::ParsedFixtureContext {
-            accounts,
-            compute_budget,
-            feature_set,
-            instruction,
-            slot,
-        } = fuzz::firedancer::parse_fixture_context(&fixture.input);
-        self.compute_budget = compute_budget;
-        self.feature_set = feature_set;
-        self.slot = slot;
-        self.process_instruction(&instruction, &accounts)
-    }
-
-    #[cfg(feature = "fuzz-fd")]
-    /// Process a Firedancer fuzz fixture using the minified Solana Virtual
-    /// Machine (SVM) environment and compare the result against the
-    /// fixture's effects.
-    ///
-    /// Fixtures provide an API to `decode` a raw blob, as well as read
-    /// fixtures from files. Those fixtures can then be provided to this
-    /// function to process them and get a Mollusk result.
-    ///
-    ///
-    /// Note: This is a mutable method on `Mollusk`, since loading a fixture
-    /// into the test environment will alter `Mollusk` values, such as compute
-    /// budget and sysvars. However, the program cache remains unchanged.
-    ///
-    /// Therefore, developers can provision a `Mollusk` instance, set up their
-    /// desired program cache, and then run a series of fixtures against that
-    /// `Mollusk` instance (and cache).
-    ///
-    /// Note: To compare the result against the entire fixture effects, pass
-    /// `&[FixtureCheck::All]` for `checks`.
-    pub fn process_and_validate_firedancer_fixture(
-        &mut self,
-        fixture: &mollusk_svm_fuzz_fixture_firedancer::Fixture,
-    ) -> InstructionResult {
-        let fuzz::firedancer::ParsedFixtureContext {
-            accounts,
-            compute_budget,
-            feature_set,
-            instruction,
-            slot,
-        } = fuzz::firedancer::parse_fixture_context(&fixture.input);
-        self.compute_budget = compute_budget;
-        self.feature_set = feature_set;
-        self.slot = slot;
-
-        let result = self.process_instruction(&instruction, &accounts);
-        let expected_result = fuzz::firedancer::parse_fixture_effects(
-            &accounts,
-            self.compute_budget.compute_unit_limit,
-            &fixture.output,
-        );
-
-        expected_result.compare_with_config(&result, &Compare::everything(), &self.config);
-        result
-    }
-
-    #[cfg(feature = "fuzz-fd")]
-    /// Process a Firedancer fuzz fixture using the minified Solana Virtual
-    /// Machine (SVM) environment and compare the result against the
-    /// fixture's effects using a specific set of checks.
-    ///
-    /// This is useful for when you may not want to compare the entire effects,
-    /// such as omitting comparisons of compute units consumed.
-    ///
-    /// Fixtures provide an API to `decode` a raw blob, as well as read
-    /// fixtures from files. Those fixtures can then be provided to this
-    /// function to process them and get a Mollusk result.
-    ///
-    ///
-    /// Note: This is a mutable method on `Mollusk`, since loading a fixture
-    /// into the test environment will alter `Mollusk` values, such as compute
-    /// budget and sysvars. However, the program cache remains unchanged.
-    ///
-    /// Therefore, developers can provision a `Mollusk` instance, set up their
-    /// desired program cache, and then run a series of fixtures against that
-    /// `Mollusk` instance (and cache).
-    ///
-    /// Note: To compare the result against the entire fixture effects, pass
-    /// `&[FixtureCheck::All]` for `checks`.
-    pub fn process_and_partially_validate_firedancer_fixture(
-        &mut self,
-        fixture: &mollusk_svm_fuzz_fixture_firedancer::Fixture,
-        checks: &[Compare],
-    ) -> InstructionResult {
-        let fuzz::firedancer::ParsedFixtureContext {
-            accounts,
-            compute_budget,
-            feature_set,
-            instruction,
-            slot,
-        } = fuzz::firedancer::parse_fixture_context(&fixture.input);
-        self.compute_budget = compute_budget;
-        self.feature_set = feature_set;
-        self.slot = slot;
-
-        let result = self.process_instruction(&instruction, &accounts);
-        let expected = fuzz::firedancer::parse_fixture_effects(
-            &accounts,
-            self.compute_budget.compute_unit_limit,
-            &fixture.output,
-        );
-
-        result.compare_with_config(&expected, checks, &self.config);
-        result
-    }
-
-    /// Convert this `Mollusk` instance into a `MolluskContext` for stateful
-    /// testing.
-    ///
-    /// Creates a context wrapper that manages persistent state between
-    /// instruction executions, starting with the provided account store.
-    ///
-    /// See [`MolluskContext`] for more details on how to use it.
-    pub fn with_context<AS: AccountStore>(self, mut account_store: AS) -> MolluskContext<AS> {
-        // For convenience, load all program accounts into the account store,
-        // but only if they don't exist.
-        self.program_cache
-            .get_all_keyed_program_accounts()
-            .into_iter()
-            .for_each(|(pubkey, account)| {
-                if account_store.get_account(&pubkey).is_none() {
-                    account_store.store_account(pubkey, account);
-                }
-            });
-        MolluskContext {
-            mollusk: self,
-            account_store: Rc::new(RefCell::new(account_store)),
-            hydrate_store: true, // <-- Default
-        }
-    }
 }
 
-/// A stateful wrapper around `Mollusk` that provides additional context and
-/// convenience features for testing programs.
-///
-/// `MolluskContext` maintains persistent state between instruction executions,
-/// starting with an account store that automatically manages account
-/// lifecycles. This makes it ideal for complex testing scenarios involving
-/// multiple instructions, instruction chains, and stateful program
-/// interactions.
-///
-/// Note: Account state is only persisted if the instruction execution
-/// was successful. If an instruction fails, the account state will not
-/// be updated.
-///
-/// The API is functionally identical to `Mollusk` but with enhanced state
-/// management and a streamlined interface. Namely, the input `accounts` slice
-/// is no longer required, and the returned result does not contain a
-/// `resulting_accounts` field.
-pub struct MolluskContext<AS: AccountStore> {
-    pub mollusk: Mollusk,
-    pub account_store: Rc<RefCell<AS>>,
-    pub hydrate_store: bool,
-}
-
-impl<AS: AccountStore> MolluskContext<AS> {
-    fn load_accounts_for_instructions<'a>(
-        &self,
-        instructions: impl Iterator<Item = &'a Instruction>,
-    ) -> Vec<(Pubkey, Account)> {
-        let mut accounts = Vec::new();
-
-        // If hydration is enabled, add sysvars and program accounts regardless
-        // of whether or not they exist already.
-        if self.hydrate_store {
-            self.mollusk
-                .program_cache
-                .get_all_keyed_program_accounts()
-                .into_iter()
-                .chain(self.mollusk.sysvars.get_all_keyed_sysvar_accounts())
-                .for_each(|(pubkey, account)| {
-                    accounts.push((pubkey, account));
-                });
-        }
-
-        // Regardless of hydration, only add an account if the caller hasn't
-        // already loaded it into the store.
-        let mut seen = HashSet::new();
-        let store = self.account_store.borrow();
-        instructions.for_each(|instruction| {
-            instruction
-                .accounts
-                .iter()
-                .for_each(|AccountMeta { pubkey, .. }| {
-                    if seen.insert(*pubkey) {
-                        // First try to load theirs, then see if it's a sysvar,
-                        // then see if it's a cached program, then apply the
-                        // default.
-                        let account = store.get_account(pubkey).unwrap_or_else(|| {
-                            self.mollusk
-                                .sysvars
-                                .maybe_create_sysvar_account(pubkey)
-                                .unwrap_or_else(|| {
-                                    self.mollusk
-                                        .program_cache
-                                        .maybe_create_program_account(pubkey)
-                                        .unwrap_or_else(|| store.default_account(pubkey))
-                                })
-                        });
-                        accounts.push((*pubkey, account));
-                    }
-                });
-        });
-        accounts
-    }
-
-    fn consume_mollusk_result(&self, result: &InstructionResult) {
-        if result.program_result.is_ok() {
-            // Only store resulting accounts if the result was success.
-            let mut store = self.account_store.borrow_mut();
-            for (pubkey, account) in result.resulting_accounts.iter() {
-                store.store_account(*pubkey, account.clone());
-            }
-        }
-    }
-
-    /// Process an instruction using the minified Solana Virtual Machine (SVM)
-    /// environment. Simply returns the result.
-    pub fn process_instruction(&self, instruction: &Instruction) -> InstructionResult {
-        let accounts = self.load_accounts_for_instructions(once(instruction));
-        let result = self.mollusk.process_instruction(instruction, &accounts);
-        self.consume_mollusk_result(&result);
-        result
-    }
-
-    /// Process a chain of instructions using the minified Solana Virtual
-    /// Machine (SVM) environment.
-    pub fn process_instruction_chain(&self, instructions: &[Instruction]) -> InstructionResult {
-        let accounts = self.load_accounts_for_instructions(instructions.iter());
-        let result = self
-            .mollusk
-            .process_instruction_chain(instructions, &accounts);
-        self.consume_mollusk_result(&result);
-        result
-    }
-
-    /// Process an instruction using the minified Solana Virtual Machine (SVM)
-    /// environment, then perform checks on the result.
-    pub fn process_and_validate_instruction(
-        &self,
-        instruction: &Instruction,
-        checks: &[Check],
-    ) -> InstructionResult {
-        let accounts = self.load_accounts_for_instructions(once(instruction));
-        let result = self
-            .mollusk
-            .process_and_validate_instruction(instruction, &accounts, checks);
-        self.consume_mollusk_result(&result);
-        result
-    }
-
-    /// Process a chain of instructions using the minified Solana Virtual
-    /// Machine (SVM) environment, then perform checks on the result.
-    pub fn process_and_validate_instruction_chain(
-        &self,
-        instructions: &[(&Instruction, &[Check])],
-    ) -> InstructionResult {
-        let accounts = self.load_accounts_for_instructions(
-            instructions.iter().map(|(instruction, _)| *instruction),
-        );
-        let result = self
-            .mollusk
-            .process_and_validate_instruction_chain(instructions, &accounts);
-        self.consume_mollusk_result(&result);
-        result
-    }
-}
+const RENT: Rent = Rent {
+    lamports_per_byte_year: DEFAULT_LAMPORTS_PER_BYTE_YEAR,
+    exemption_threshold: DEFAULT_EXEMPTION_THRESHOLD,
+    burn_percent: DEFAULT_BURN_PERCENT,
+};

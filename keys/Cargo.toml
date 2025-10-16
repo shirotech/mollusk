@@ -10,6 +10,7 @@ edition = { workspace = true }
 version = { workspace = true }
 
 [dependencies]
+ahash = { workspace = true }
 mollusk-svm-error = { workspace = true }
 solana-account = { workspace = true }
 solana-instruction = { workspace = true }

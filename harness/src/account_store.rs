@@ -1,6 +1,6 @@
 //! A trait for implementing an account store, to be used with the
 /// `MolluskContext`.
-use {solana_account::Account, solana_pubkey::Pubkey, std::collections::HashMap};
+use {ahash::HashMap, solana_account::Account, solana_pubkey::Pubkey};
 
 /// A trait for implementing an account store, to be used with the
 /// `MolluskContext`.

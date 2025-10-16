@@ -3,11 +3,9 @@
 use {
     crate::{
         config::{compare, throw, CheckContext, Config},
-        types::{InstructionResult, ProgramResult},
+        types::InstructionResult,
     },
     solana_account::ReadableAccount,
-    solana_instruction::error::InstructionError,
-    solana_program_error::ProgramError,
     solana_pubkey::Pubkey,
 };
 
@@ -15,9 +13,7 @@ enum CheckType<'a> {
     /// Check the number of compute units consumed by the instruction.
     ComputeUnitsConsumed(u64),
     /// Check the time taken to execute the instruction.
-    ExecutionTime(u64),
-    /// Check the result code of the program's execution.
-    ProgramResult(ProgramResult),
+    ProgramResult(bool),
     /// Check the return data produced by executing the instruction.
     ReturnData(&'a [u8]),
     /// Check a resulting account after executing the instruction.
@@ -40,28 +36,23 @@ impl<'a> Check<'a> {
         Check::new(CheckType::ComputeUnitsConsumed(units))
     }
 
-    /// Check the time taken to execute the instruction.
-    pub fn time(time: u64) -> Self {
-        Check::new(CheckType::ExecutionTime(time))
-    }
-
     /// Assert that the program executed successfully.
     pub fn success() -> Self {
-        Check::new(CheckType::ProgramResult(ProgramResult::Success))
+        Check::new(CheckType::ProgramResult(true))
     }
 
     /// Assert that the program returned an error.
-    pub fn err(error: ProgramError) -> Self {
-        Check::new(CheckType::ProgramResult(ProgramResult::Failure(error)))
+    pub fn err() -> Self {
+        Check::new(CheckType::ProgramResult(false))
     }
 
     /// Assert that the instruction returned an error.
-    pub fn instruction_err(error: InstructionError) -> Self {
-        Check::new(CheckType::ProgramResult(ProgramResult::UnknownError(error)))
+    pub fn instruction_err() -> Self {
+        Check::new(CheckType::ProgramResult(false))
     }
 
     /// Assert that the instruction returned the provided result.
-    pub fn program_result(result: ProgramResult) -> Self {
+    pub fn program_result(result: bool) -> Self {
         Check::new(CheckType::ProgramResult(result))
     }
 
@@ -188,11 +179,6 @@ impl InstructionResult {
                     let check_units = *units;
                     let actual_units = self.compute_units_consumed;
                     pass &= compare!(c, "compute_units", check_units, actual_units);
-                }
-                CheckType::ExecutionTime(time) => {
-                    let check_time = *time;
-                    let actual_time = self.execution_time;
-                    pass &= compare!(c, "execution_time", check_time, actual_time);
                 }
                 CheckType::ProgramResult(result) => {
                     let check_result = result;
