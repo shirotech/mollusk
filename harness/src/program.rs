@@ -15,10 +15,7 @@ use {
     },
     solana_pubkey::Pubkey,
     solana_rent::Rent,
-    std::{
-        cell::{RefCell, RefMut},
-        sync::Arc,
-    },
+    std::sync::Arc,
 };
 
 /// Loader keys, re-exported from `solana_sdk` for convenience.
@@ -56,7 +53,7 @@ pub mod precompile_keys {
 }
 
 pub struct ProgramCache {
-    cache: RefCell<ProgramCacheForTxBatch>,
+    pub cache: ProgramCacheForTxBatch,
     // This stinks, but the `ProgramCacheForTxBatch` doesn't offer a way to
     // access its entries directly. In order to make DX easier for those using
     // `MolluskContext`, we need to track entries added to the cache,
@@ -66,7 +63,7 @@ pub struct ProgramCache {
     // already.
     //
     // K: program ID, V: loader key
-    entries_cache: RefCell<HashMap<Pubkey, Pubkey>>,
+    pub entries_cache: HashMap<Pubkey, Pubkey>,
     // The function registry (syscalls) to use for verifying and loading
     // program ELFs.
     pub program_runtime_environment: BuiltinProgram<InvokeContext<'static>>,
@@ -74,9 +71,9 @@ pub struct ProgramCache {
 
 impl ProgramCache {
     pub fn new(feature_set: &FeatureSet, compute_budget: &ComputeBudget) -> Self {
-        let me = Self {
-            cache: RefCell::new(ProgramCacheForTxBatch::default()),
-            entries_cache: RefCell::new(HashMap::new()),
+        let mut me = Self {
+            cache: ProgramCacheForTxBatch::default(),
+            entries_cache: HashMap::new(),
             program_runtime_environment: create_program_runtime_environment_v1(
                 &feature_set.runtime_features(),
                 &compute_budget.to_budget(),
@@ -93,15 +90,13 @@ impl ProgramCache {
         me
     }
 
-    pub(crate) fn cache(&self) -> RefMut<'_, ProgramCacheForTxBatch> {
-        self.cache.borrow_mut()
+    pub fn has_cache(&self, program_id: &Pubkey) -> bool {
+        self.entries_cache.contains_key(program_id)
     }
 
-    fn replenish(&self, program_id: Pubkey, entry: Arc<ProgramCacheEntry>) {
-        self.entries_cache
-            .borrow_mut()
-            .insert(program_id, entry.account_owner());
-        self.cache.borrow_mut().replenish(program_id, entry);
+    fn replenish(&mut self, program_id: Pubkey, entry: Arc<ProgramCacheEntry>) {
+        self.entries_cache.insert(program_id, entry.account_owner());
+        self.cache.replenish(program_id, entry);
     }
 
     /// Add a builtin program to the cache.
@@ -149,7 +144,7 @@ impl ProgramCache {
 
     /// Load a program from the cache.
     pub fn load_program(&self, program_id: &Pubkey) -> Option<Arc<ProgramCacheEntry>> {
-        self.cache.borrow().find(program_id)
+        self.cache.find(program_id)
     }
 }
 

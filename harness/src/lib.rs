@@ -450,13 +450,12 @@ pub mod sysvar;
 pub use mollusk_svm_result as result;
 #[cfg(any(feature = "fuzz", feature = "fuzz-fd"))]
 use mollusk_svm_result::Compare;
-use solana_clock::Clock;
 use solana_compute_budget::compute_budget::{
     SVMTransactionExecutionBudget, SVMTransactionExecutionCost,
 };
 #[cfg(feature = "precompiles")]
 use solana_precompile_error::PrecompileError;
-use solana_program_runtime::sysvar_cache::SysvarCache;
+pub use solana_program_runtime::sysvar_cache::SysvarCache;
 use solana_rent::{
     Rent, DEFAULT_BURN_PERCENT, DEFAULT_EXEMPTION_THRESHOLD, DEFAULT_LAMPORTS_PER_BYTE_YEAR,
 };
@@ -497,7 +496,6 @@ pub struct Mollusk {
     pub features: SVMFeatureSet,
     pub feature_set: FeatureSet,
     pub program_cache: ProgramCache,
-    pub sysvars_cache: SysvarCache,
 
     /// This field stores the slot only to be able to convert to and from FD
     /// fixtures and a Mollusk instance, since FD fixtures have a
@@ -542,7 +540,6 @@ impl Default for Mollusk {
             features: feature_set.runtime_features(),
             feature_set,
             program_cache,
-            sysvars_cache: Sysvars::default().setup_sysvar_cache(&[]),
 
             #[cfg(feature = "fuzz-fd")]
             slot: 0,
@@ -652,14 +649,15 @@ impl Mollusk {
         self.program_cache.add_program(program_id, loader_key, elf);
     }
 
-    pub fn update_clock(&mut self, clock: &Clock) {
-        self.sysvars_cache.set_sysvar_for_tests(clock);
+    pub fn get_sysvar_cache() -> SysvarCache {
+        (&Sysvars::default()).into()
     }
 
     /// Process an instruction using the minified Solana Virtual Machine (SVM)
     /// environment. Simply returns the result.
     pub fn process_instruction(
-        &self,
+        &mut self,
+        sysvar_cache: &SysvarCache,
         instruction: &Instruction,
         accounts: Vec<(Pubkey, Account)>,
     ) -> InstructionResult {
@@ -690,20 +688,19 @@ impl Mollusk {
         );
 
         let invoke_result = {
-            let mut program_cache = self.program_cache.cache();
             let callback = MolluskInvokeContextCallback {
                 epoch_stake: &self.epoch_stake,
                 feature_set: &self.feature_set,
             };
             let mut invoke_context = InvokeContext::new(
                 &mut transaction_context,
-                &mut program_cache,
+                &mut self.program_cache.cache,
                 EnvironmentConfig::new(
                     Hash::default(),
                     5000,
                     &callback,
                     &self.features,
-                    &self.sysvars_cache,
+                    sysvar_cache,
                 ),
                 None,
                 self.budget_ex_budget,
@@ -735,8 +732,7 @@ impl Mollusk {
 
         let return_data = transaction_context.get_return_data().1.to_vec();
 
-        let program_result = invoke_result.is_ok();
-        let resulting_accounts = if program_result {
+        let resulting_accounts = if invoke_result.is_ok() {
             accounts
                 .into_iter()
                 .map(|(pubkey, account)| {
@@ -760,7 +756,6 @@ impl Mollusk {
 
         InstructionResult {
             compute_units_consumed,
-            program_result,
             raw_result: invoke_result,
             return_data,
             resulting_accounts,

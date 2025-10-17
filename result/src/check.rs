@@ -182,7 +182,7 @@ impl InstructionResult {
                 }
                 CheckType::ProgramResult(result) => {
                     let check_result = result;
-                    let actual_result = &self.program_result;
+                    let actual_result = &self.raw_result.is_ok();
                     pass &= compare!(c, "program_result", check_result, actual_result);
                 }
                 CheckType::ReturnData(return_data) => {

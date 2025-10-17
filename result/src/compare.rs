@@ -24,8 +24,6 @@ pub enum Compare {
     /// Validate compute units consumed.
     ComputeUnits,
     /// Validate the program result.
-    ProgramResult,
-    /// Validate the return data.
     ReturnData,
     /// Validate all resulting accounts.
     AllResultingAccounts {
@@ -128,7 +126,6 @@ impl Compare {
     pub fn everything_but_cus() -> Vec<Self> {
         vec![
             // Self::ExecutionTime, // TODO: Intentionally omitted for now...
-            Self::ProgramResult,
             Self::ReturnData,
             Self::all_resulting_accounts(),
         ]
@@ -139,7 +136,6 @@ impl Compare {
         vec![
             Self::ComputeUnits,
             // Self::ExecutionTime, // TODO: Intentionally omitted for now...
-            Self::ProgramResult,
             Self::ReturnData,
             Self::all_resulting_accounts(),
         ]
@@ -219,9 +215,6 @@ impl InstructionResult {
                         self.compute_units_consumed,
                         b.compute_units_consumed
                     );
-                }
-                Compare::ProgramResult => {
-                    pass &= compare!(c, "program_result", self.program_result, b.program_result);
                 }
                 Compare::ReturnData => {
                     pass &= compare!(c, "return_data", self.return_data, b.return_data);
