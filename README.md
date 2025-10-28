@@ -23,16 +23,13 @@ budget, feature set, or sysvars. These configurations are stored directly
 on the test harness (the `Mollusk` struct), but can be manipulated through
 a handful of helpers.
 
-Four main API methods are offered:
-
-* `process_instruction`: Process an instruction and return the result.
-* `process_and_validate_instruction`: Process an instruction and perform a
-  series of checks on the result, panicking if any checks fail.
-* `process_instruction_chain`: Process a chain of instructions and return
-  the result.
-* `process_and_validate_instruction_chain`: Process a chain of instructions
-  and perform a series of checks on each result, panicking if any checks
-  fail.
+* [Single Instructions](#single-instructions)
+* [Instruction Chains](#instruction-chains)
+* [Stateful Testing with MolluskContext](#stateful-testing-with-molluskcontext)
+* [Benchmarking Compute Units](#benchmarking-compute-units)
+* [Fixtures](#fixtures)
+  * [Generating Fixtures from Mollusk Tests](#generating-fixtures-from-mollusk-tests)
+  * [Loading and Executing Fixtures](#loading-and-executing-fixtures)
 
 ## Single Instructions
 
@@ -332,13 +329,13 @@ let result2 = context.process_instruction(&instruction2);
 The `MolluskContext` API provides the same core methods as `Mollusk`:
 
 * `process_instruction`: Process an instruction with automatic account management
-* `process_instruction_chain`: Process a chain of instructions  
+* `process_instruction_chain`: Process a chain of instructions
 * `process_and_validate_instruction`: Process and validate an instruction
 * `process_and_validate_instruction_chain`: Process and validate an instruction chain
 
-All methods return `ContextResult` instead of `InstructionResult`, which omits
-the `resulting_accounts` field since accounts are managed by the context's
-account store.
+All methods return `InstructionResult`, just like the base `Mollusk` methods.
+The `resulting_accounts` field will reflect the final state after execution,
+and these accounts are automatically stored in the context's account store.
 
 Note that `HashMap<Pubkey, Account>` implements `AccountStore` directly,
 so you can use it as a simple in-memory account store without needing
