@@ -446,8 +446,6 @@ pub mod file;
 pub mod program;
 pub mod sysvar;
 
-use std::sync::LazyLock;
-
 // Re-export result module from mollusk-svm-result crate
 pub use mollusk_svm_result as result;
 #[cfg(any(feature = "fuzz", feature = "fuzz-fd"))]
@@ -495,6 +493,7 @@ pub struct Mollusk {
     pub compute_budget: ComputeBudget,
     budget_ex_budget: SVMTransactionExecutionBudget,
     budget_ex_cost: SVMTransactionExecutionCost,
+    runtime_envs: ProgramRuntimeEnvironments,
 
     pub epoch_stake: EpochStake,
     pub features: SVMFeatureSet,
@@ -518,7 +517,6 @@ impl Default for Mollusk {
              solana_runtime::message_processor=debug,\
              solana_runtime::system_instruction_processor=trace",
         );
-        let compute_budget = ComputeBudget::new_with_defaults(true, true);
 
         #[cfg(feature = "fuzz")]
         let feature_set = {
@@ -532,13 +530,22 @@ impl Default for Mollusk {
         };
         #[cfg(not(feature = "fuzz"))]
         let feature_set = FeatureSet::all_enabled();
+
+        let simd_0268_active =
+            feature_set.is_active(&agave_feature_set::raise_cpi_nesting_limit_to_8::id());
+        let simd_0339_active =
+            feature_set.is_active(&agave_feature_set::increase_cpi_account_info_limit::id());
+
+        let compute_budget = ComputeBudget::new_with_defaults(simd_0268_active, simd_0339_active);
         let program_cache = ProgramCache::new(&feature_set, &compute_budget);
+
         Self {
             config: Config::default(),
 
             compute_budget,
             budget_ex_budget: compute_budget.to_budget(),
             budget_ex_cost: compute_budget.to_cost(),
+            runtime_envs: ProgramRuntimeEnvironments::default(),
 
             epoch_stake: EpochStake::default(),
             features: feature_set.runtime_features(),
@@ -662,11 +669,10 @@ impl Mollusk {
     pub fn process_instruction(
         &mut self,
         sysvar_cache: &SysvarCache,
-        instruction: &Instruction,
+        instruction: Instruction,
         accounts: Vec<(Pubkey, Account)>,
     ) -> InstructionResult {
-        static RUNTIME_ENVS: LazyLock<ProgramRuntimeEnvironments> =
-            LazyLock::new(ProgramRuntimeEnvironments::default);
+        const DEFAULT_HASH: Hash = Hash::new_from_array([0; 32]);
 
         let mut compute_units_consumed = 0;
         let mut timings = ExecuteTimings::default();
@@ -685,7 +691,7 @@ impl Mollusk {
             program_id_index,
             instruction_accounts,
             transaction_accounts,
-        } = crate::compile_accounts::compile_accounts(instruction, &accounts, loader_key);
+        } = crate::compile_accounts::compile_accounts(&instruction, &accounts, loader_key);
 
         let mut transaction_context = TransactionContext::new(
             transaction_accounts,
@@ -703,12 +709,12 @@ impl Mollusk {
                 &mut transaction_context,
                 &mut self.program_cache.cache,
                 EnvironmentConfig::new(
-                    Hash::default(),
+                    DEFAULT_HASH,
                     5000,
                     &callback,
                     &self.features,
-                    &RUNTIME_ENVS,
-                    &RUNTIME_ENVS,
+                    &self.runtime_envs,
+                    &self.runtime_envs,
                     sysvar_cache,
                 ),
                 None,
@@ -722,21 +728,11 @@ impl Mollusk {
                 .configure_next_instruction_for_tests(
                     program_id_index,
                     instruction_accounts,
-                    instruction.data.clone(),
+                    instruction.data,
                 )
                 .expect("failed to configure next instruction");
 
-            let result = if invoke_context.is_precompile(&instruction.program_id) {
-                invoke_context.process_precompile(
-                    &instruction.program_id,
-                    &instruction.data,
-                    std::iter::once(instruction.data.as_ref()),
-                )
-            } else {
-                invoke_context.process_instruction(&mut compute_units_consumed, &mut timings)
-            };
-
-            result
+            invoke_context.process_instruction(&mut compute_units_consumed, &mut timings)
         };
 
         let return_data = transaction_context.get_return_data().1.to_vec();
