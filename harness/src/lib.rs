@@ -446,15 +446,19 @@ pub mod file;
 pub mod program;
 pub mod sysvar;
 
+use std::sync::LazyLock;
+
 // Re-export result module from mollusk-svm-result crate
 pub use mollusk_svm_result as result;
 #[cfg(any(feature = "fuzz", feature = "fuzz-fd"))]
 use mollusk_svm_result::Compare;
+use solana_account::ReadableAccount;
 use solana_compute_budget::compute_budget::{
     SVMTransactionExecutionBudget, SVMTransactionExecutionCost,
 };
 #[cfg(feature = "precompiles")]
 use solana_precompile_error::PrecompileError;
+use solana_program_runtime::loaded_programs::ProgramRuntimeEnvironments;
 pub use solana_program_runtime::sysvar_cache::SysvarCache;
 use solana_rent::{
     Rent, DEFAULT_BURN_PERCENT, DEFAULT_EXEMPTION_THRESHOLD, DEFAULT_LAMPORTS_PER_BYTE_YEAR,
@@ -514,7 +518,7 @@ impl Default for Mollusk {
              solana_runtime::message_processor=debug,\
              solana_runtime::system_instruction_processor=trace",
         );
-        let compute_budget = ComputeBudget::new_with_defaults(true);
+        let compute_budget = ComputeBudget::new_with_defaults(true, true);
 
         #[cfg(feature = "fuzz")]
         let feature_set = {
@@ -661,6 +665,9 @@ impl Mollusk {
         instruction: &Instruction,
         accounts: Vec<(Pubkey, Account)>,
     ) -> InstructionResult {
+        static RUNTIME_ENVS: LazyLock<ProgramRuntimeEnvironments> =
+            LazyLock::new(ProgramRuntimeEnvironments::default);
+
         let mut compute_units_consumed = 0;
         let mut timings = ExecuteTimings::default();
 
@@ -700,6 +707,8 @@ impl Mollusk {
                     5000,
                     &callback,
                     &self.features,
+                    &RUNTIME_ENVS,
+                    &RUNTIME_ENVS,
                     sysvar_cache,
                 ),
                 None,
@@ -713,7 +722,7 @@ impl Mollusk {
                 .configure_next_instruction_for_tests(
                     program_id_index,
                     instruction_accounts,
-                    &instruction.data,
+                    instruction.data.clone(),
                 )
                 .expect("failed to configure next instruction");
 
@@ -739,13 +748,18 @@ impl Mollusk {
                     transaction_context
                         .find_index_of_account(&pubkey)
                         .map(|index| {
-                            let resulting_account = transaction_context
-                                .accounts()
-                                .try_borrow(index)
-                                .unwrap()
-                                .clone()
-                                .into();
-                            (pubkey, resulting_account)
+                            let acc = transaction_context.accounts().try_borrow(index).unwrap();
+
+                            (
+                                pubkey,
+                                Account {
+                                    lamports: acc.lamports(),
+                                    data: acc.data().to_vec(),
+                                    owner: *acc.owner(),
+                                    executable: acc.executable(),
+                                    rent_epoch: acc.rent_epoch(),
+                                },
+                            )
                         })
                         .unwrap_or((pubkey, account))
                 })

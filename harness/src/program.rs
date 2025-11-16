@@ -66,7 +66,7 @@ pub struct ProgramCache {
     pub entries_cache: HashMap<Pubkey, Pubkey>,
     // The function registry (syscalls) to use for verifying and loading
     // program ELFs.
-    pub program_runtime_environment: BuiltinProgram<InvokeContext<'static>>,
+    pub program_runtime_environment: BuiltinProgram<InvokeContext<'static, 'static>>,
 }
 
 impl ProgramCache {
@@ -185,12 +185,6 @@ static BUILTINS: &[Builtin] = &[
         program_id: loader_keys::LOADER_V4,
         name: "solana_loader_v4_program",
         entrypoint: solana_loader_v4_program::Entrypoint::vm,
-    },
-    #[cfg(feature = "all-builtins")]
-    Builtin {
-        program_id: solana_sdk_ids::stake::id(),
-        name: "solana_stake_program",
-        entrypoint: solana_stake_program::stake_instruction::Entrypoint::vm,
     },
     /* ... */
 ];

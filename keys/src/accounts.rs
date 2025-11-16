@@ -6,8 +6,10 @@ use {
     solana_account::{Account, AccountSharedData},
     solana_instruction::Instruction,
     solana_pubkey::Pubkey,
-    solana_transaction_context::{IndexOfAccount, InstructionAccount, TransactionAccount},
+    solana_transaction_context::{IndexOfAccount, InstructionAccount},
 };
+
+pub type TransactionAccount = (Pubkey, AccountSharedData);
 
 // Helper struct to avoid cloning instruction data.
 pub struct CompiledInstructionWithoutData {

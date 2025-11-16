@@ -5,14 +5,14 @@ use {
     mollusk_svm_keys::{
         accounts::{
             compile_instruction_accounts, compile_instruction_without_data,
-            compile_transaction_accounts_for_instruction,
+            compile_transaction_accounts_for_instruction, TransactionAccount,
         },
         keys::KeyMap,
     },
     solana_account::{Account, WritableAccount},
     solana_instruction::Instruction,
     solana_pubkey::Pubkey,
-    solana_transaction_context::{InstructionAccount, TransactionAccount},
+    solana_transaction_context::InstructionAccount,
 };
 
 pub struct CompiledAccounts {
