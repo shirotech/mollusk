@@ -21,16 +21,29 @@ pub struct CompiledAccounts {
     pub transaction_accounts: Vec<(Pubkey, AccountSharedData)>,
 }
 
-pub fn compile_accounts<'a>(
-    instruction: &Instruction,
+pub fn compile_accounts<'a, 'b, I>(
+    instruction_index: usize,
+    all_instructions: I,
     accounts: impl Iterator<Item = &'a (Pubkey, Account)>,
     loader_key: Pubkey,
-) -> CompiledAccounts {
+) -> CompiledAccounts
+where
+    I: IntoIterator<Item = &'b Instruction>,
+{
+    // Collect instruction references for the instructions sysvar.
+    let instruction_refs: Vec<&Instruction> = all_instructions.into_iter().collect();
+    let instruction = instruction_refs[instruction_index];
+
     let stub_out_program_account = move || {
         let mut program_account = Account::default();
         program_account.set_owner(loader_key);
         program_account.set_executable(true);
         program_account
+    };
+
+    let fallback_to_instructions_sysvar = |pubkey: &Pubkey| -> Option<Account> {
+        (pubkey == &solana_instructions_sysvar::ID)
+            .then(|| crate::instructions_sysvar::keyed_account(instruction_refs.iter().copied()).1)
     };
 
     let key_map = KeyMap::compile_from_instruction(instruction);
@@ -40,7 +53,8 @@ pub fn compile_accounts<'a>(
         &key_map,
         instruction,
         accounts,
-        Some(Box::new(stub_out_program_account)),
+        Some(stub_out_program_account),
+        Some(fallback_to_instructions_sysvar),
     );
 
     CompiledAccounts {

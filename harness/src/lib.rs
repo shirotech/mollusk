@@ -445,6 +445,7 @@ pub mod epoch_stake;
 pub mod file;
 #[cfg(any(feature = "fuzz", feature = "fuzz-fd"))]
 pub mod fuzz;
+pub mod instructions_sysvar;
 pub mod program;
 pub mod sysvar;
 
@@ -697,6 +698,7 @@ impl Mollusk {
 
     fn process_instruction_inner(
         &self,
+        instruction_index: usize,
         instruction: &Instruction,
         accounts: &[(Pubkey, Account)],
         program_id_index: u16,
@@ -712,6 +714,7 @@ impl Mollusk {
             self.compute_budget.max_instruction_stack_depth,
             self.compute_budget.max_instruction_trace_length,
         );
+        transaction_context.set_top_level_instruction_index(instruction_index);
 
         let invoke_result = {
             let mut program_cache = self.program_cache.cache();
@@ -835,15 +838,23 @@ impl Mollusk {
         instruction: &Instruction,
         accounts: &[(Pubkey, Account)],
     ) -> InstructionResult {
+        const INDEX: usize = 0;
+
         let loader_key = self.get_loader_key(&instruction.program_id);
 
         let CompiledAccounts {
             program_id_index,
             instruction_accounts,
             transaction_accounts,
-        } = crate::compile_accounts::compile_accounts(instruction, accounts.iter(), loader_key);
+        } = crate::compile_accounts::compile_accounts(
+            INDEX,
+            std::iter::once(instruction),
+            accounts.iter(),
+            loader_key,
+        );
 
         self.process_instruction_inner(
+            INDEX,
             instruction,
             accounts,
             program_id_index,
@@ -872,16 +883,22 @@ impl Mollusk {
             ..Default::default()
         };
 
-        for instruction in instructions {
+        for (index, instruction) in instructions.iter().enumerate() {
             let loader_key = self.get_loader_key(&instruction.program_id);
 
             let CompiledAccounts {
                 program_id_index,
                 instruction_accounts,
                 transaction_accounts,
-            } = crate::compile_accounts::compile_accounts(instruction, accounts.iter(), loader_key);
+            } = crate::compile_accounts::compile_accounts(
+                index,
+                instructions.iter(),
+                accounts.iter(),
+                loader_key,
+            );
 
             let this_result = self.process_instruction_inner(
+                index,
                 instruction,
                 accounts,
                 program_id_index,
@@ -927,15 +944,23 @@ impl Mollusk {
         accounts: &[(Pubkey, Account)],
         checks: &[Check],
     ) -> InstructionResult {
+        const INDEX: usize = 0;
+
         let loader_key = self.get_loader_key(&instruction.program_id);
 
         let CompiledAccounts {
             program_id_index,
             instruction_accounts,
             transaction_accounts,
-        } = crate::compile_accounts::compile_accounts(instruction, accounts.iter(), loader_key);
+        } = crate::compile_accounts::compile_accounts(
+            INDEX,
+            std::iter::once(instruction),
+            accounts.iter(),
+            loader_key,
+        );
 
         let result = self.process_instruction_inner(
+            INDEX,
             instruction,
             accounts,
             program_id_index,
@@ -984,7 +1009,7 @@ impl Mollusk {
             ..Default::default()
         };
 
-        for (instruction, checks) in instructions.iter() {
+        for (index, (instruction, checks)) in instructions.iter().enumerate() {
             let loader_key = self.get_loader_key(&instruction.program_id);
             let accounts = &composite_result.resulting_accounts;
 
@@ -992,9 +1017,15 @@ impl Mollusk {
                 program_id_index,
                 instruction_accounts,
                 transaction_accounts,
-            } = crate::compile_accounts::compile_accounts(instruction, accounts.iter(), loader_key);
+            } = crate::compile_accounts::compile_accounts(
+                index,
+                instructions.iter().map(|(ix, _)| *ix),
+                accounts.iter(),
+                loader_key,
+            );
 
             let this_result = self.process_instruction_inner(
+                index,
                 instruction,
                 accounts,
                 program_id_index,

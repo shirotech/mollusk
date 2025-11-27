@@ -2226,7 +2226,7 @@ dependencies = [
 
 [[package]]
 name = "mollusk-svm"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "agave-feature-set",
  "agave-precompiles",
@@ -2256,6 +2256,7 @@ dependencies = [
  "solana-hash 3.1.0",
  "solana-instruction",
  "solana-instruction-error",
+ "solana-instructions-sysvar",
  "solana-loader-v3-interface",
  "solana-loader-v4-interface",
  "solana-loader-v4-program",
@@ -2285,7 +2286,7 @@ dependencies = [
 
 [[package]]
 name = "mollusk-svm-bencher"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "mollusk-svm",
@@ -2299,7 +2300,7 @@ dependencies = [
 
 [[package]]
 name = "mollusk-svm-cli"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "clap",
@@ -2318,7 +2319,7 @@ dependencies = [
 
 [[package]]
 name = "mollusk-svm-error"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "solana-pubkey 4.0.0",
  "thiserror 1.0.69",
@@ -2326,7 +2327,7 @@ dependencies = [
 
 [[package]]
 name = "mollusk-svm-fuzz-fixture"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "agave-feature-set",
  "mollusk-svm-fuzz-fs",
@@ -2350,7 +2351,7 @@ dependencies = [
 
 [[package]]
 name = "mollusk-svm-fuzz-fixture-firedancer"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "agave-feature-set",
  "mollusk-svm-fuzz-fs",
@@ -2367,7 +2368,7 @@ dependencies = [
 
 [[package]]
 name = "mollusk-svm-fuzz-fs"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "bs58",
  "prost",
@@ -2378,7 +2379,7 @@ dependencies = [
 
 [[package]]
 name = "mollusk-svm-keys"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "mollusk-svm-error",
  "solana-account",
@@ -2389,7 +2390,7 @@ dependencies = [
 
 [[package]]
 name = "mollusk-svm-programs-memo"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "mollusk-svm",
  "solana-account",
@@ -2398,7 +2399,7 @@ dependencies = [
 
 [[package]]
 name = "mollusk-svm-programs-token"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "mollusk-svm",
  "solana-account",
@@ -2411,7 +2412,7 @@ dependencies = [
 
 [[package]]
 name = "mollusk-svm-result"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "mollusk-svm-fuzz-fixture",
  "serde",
@@ -4900,6 +4901,17 @@ name = "test-program-epoch-stake"
 version = "0.1.0"
 dependencies = [
  "solana-account-info",
+ "solana-program-entrypoint",
+ "solana-program-error",
+ "solana-pubkey 4.0.0",
+]
+
+[[package]]
+name = "test-program-instructions-sysvar"
+version = "0.1.0"
+dependencies = [
+ "solana-account-info",
+ "solana-instructions-sysvar",
  "solana-program-entrypoint",
  "solana-program-error",
  "solana-pubkey 4.0.0",
