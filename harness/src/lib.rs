@@ -447,8 +447,12 @@ pub mod file;
 pub mod fuzz;
 pub mod instructions_sysvar;
 pub mod program;
+#[cfg(feature = "register-tracing")]
+pub mod register_tracing;
 pub mod sysvar;
 
+#[cfg(feature = "register-tracing")]
+use crate::register_tracing::DefaultRegisterTracingCallback;
 // Re-export result module from mollusk-svm-result crate
 pub use mollusk_svm_result as result;
 #[cfg(any(feature = "fuzz", feature = "fuzz-fd"))]
@@ -503,6 +507,12 @@ pub struct Mollusk {
     #[cfg(feature = "invocation-inspect-callback")]
     pub invocation_inspect_callback: Box<dyn InvocationInspectCallback>,
 
+    /// Dictates whether or not register tracing was enabled.
+    /// Provided as input to the invocation inspect callback for potential
+    /// register trace consumption.
+    #[cfg(feature = "invocation-inspect-callback")]
+    enable_register_tracing: bool,
+
     /// This field stores the slot only to be able to convert to and from FD
     /// fixtures and a Mollusk instance, since FD fixtures have a
     /// "slot context". However, this field is functionally irrelevant for
@@ -522,7 +532,7 @@ pub trait InvocationInspectCallback {
         invoke_context: &InvokeContext,
     );
 
-    fn after_invocation(&self, invoke_context: &InvokeContext);
+    fn after_invocation(&self, invoke_context: &InvokeContext, register_tracing_enabled: bool);
 }
 
 #[cfg(feature = "invocation-inspect-callback")]
@@ -533,47 +543,19 @@ impl InvocationInspectCallback for EmptyInvocationInspectCallback {
     fn before_invocation(&self, _: &Pubkey, _: &[u8], _: &[InstructionAccount], _: &InvokeContext) {
     }
 
-    fn after_invocation(&self, _: &InvokeContext) {}
+    fn after_invocation(&self, _: &InvokeContext, _register_tracing_enabled: bool) {}
 }
 
 impl Default for Mollusk {
     fn default() -> Self {
-        #[rustfmt::skip]
-        solana_logger::setup_with_default(
-            "solana_rbpf::vm=debug,\
-             solana_runtime::message_processor=debug,\
-             solana_runtime::system_instruction_processor=trace",
-        );
-        let compute_budget = ComputeBudget::new_with_defaults(true, true);
+        let _enable_register_tracing = false;
 
-        #[cfg(feature = "fuzz")]
-        let feature_set = {
-            // Omit "test features" (they have the same u64 ID).
-            let mut fs = FeatureSet::all_enabled();
-            fs.active_mut()
-                .remove(&agave_feature_set::disable_sbpf_v0_execution::id());
-            fs.active_mut()
-                .remove(&agave_feature_set::reenable_sbpf_v0_execution::id());
-            fs
-        };
-        #[cfg(not(feature = "fuzz"))]
-        let feature_set = FeatureSet::all_enabled();
-        let program_cache = ProgramCache::new(&feature_set, &compute_budget);
-        Self {
-            config: Config::default(),
-            compute_budget,
-            epoch_stake: EpochStake::default(),
-            feature_set,
-            logger: None,
-            program_cache,
-            sysvars: Sysvars::default(),
+        // Allow users to virtually get register tracing data without
+        // doing any changes to their code provided `SBF_TRACE_DIR` is set.
+        #[cfg(feature = "register-tracing")]
+        let _enable_register_tracing = std::env::var("SBF_TRACE_DIR").is_ok();
 
-            #[cfg(feature = "invocation-inspect-callback")]
-            invocation_inspect_callback: Box::new(EmptyInvocationInspectCallback {}),
-
-            #[cfg(feature = "fuzz-fd")]
-            slot: 0,
-        }
+        Self::new_inner(_enable_register_tracing)
     }
 }
 
@@ -639,6 +621,61 @@ impl InvokeContextCallback for MolluskInvokeContextCallback<'_> {
 }
 
 impl Mollusk {
+    fn new_inner(#[allow(unused)] enable_register_tracing: bool) -> Self {
+        #[rustfmt::skip]
+        solana_logger::setup_with_default(
+            "solana_rbpf::vm=debug,\
+             solana_runtime::message_processor=debug,\
+             solana_runtime::system_instruction_processor=trace",
+        );
+        let compute_budget = ComputeBudget::new_with_defaults(true, true);
+
+        #[cfg(feature = "fuzz")]
+        let feature_set = {
+            // Omit "test features" (they have the same u64 ID).
+            let mut fs = FeatureSet::all_enabled();
+            fs.active_mut()
+                .remove(&agave_feature_set::disable_sbpf_v0_execution::id());
+            fs.active_mut()
+                .remove(&agave_feature_set::reenable_sbpf_v0_execution::id());
+            fs
+        };
+        #[cfg(not(feature = "fuzz"))]
+        let feature_set = FeatureSet::all_enabled();
+
+        let program_cache =
+            ProgramCache::new(&feature_set, &compute_budget, enable_register_tracing);
+
+        #[allow(unused_mut)]
+        let mut me = Self {
+            config: Config::default(),
+            compute_budget,
+            epoch_stake: EpochStake::default(),
+            feature_set,
+            logger: None,
+            program_cache,
+            sysvars: Sysvars::default(),
+
+            #[cfg(feature = "invocation-inspect-callback")]
+            invocation_inspect_callback: Box::new(EmptyInvocationInspectCallback {}),
+
+            #[cfg(feature = "invocation-inspect-callback")]
+            enable_register_tracing,
+
+            #[cfg(feature = "fuzz-fd")]
+            slot: 0,
+        };
+
+        #[cfg(feature = "register-tracing")]
+        if enable_register_tracing {
+            // Have a default register tracing callback if register tracing is
+            // enabled.
+            me.invocation_inspect_callback = Box::new(DefaultRegisterTracingCallback::default());
+        }
+
+        me
+    }
+
     /// Create a new Mollusk instance containing the provided program.
     ///
     /// Attempts to load the program's ELF file from the default search paths.
@@ -655,6 +692,28 @@ impl Mollusk {
     /// - The current working directory
     pub fn new(program_id: &Pubkey, program_name: &str) -> Self {
         let mut mollusk = Self::default();
+        mollusk.add_program(program_id, program_name);
+        mollusk
+    }
+
+    /// Create a new Mollusk instance with configurable debugging features.
+    ///
+    /// This constructor allows enabling low-level VM debugging capabilities,
+    /// such as register tracing, which are baked into program executables at
+    /// load time and cannot be changed afterwards.
+    ///
+    /// When `enable_register_tracing` is `true`:
+    /// - Programs are loaded with register tracing support
+    /// - A default [`DefaultRegisterTracingCallback`] is installed
+    /// - Trace data is written to `SBF_TRACE_DIR` (or `target/sbf/trace` by
+    ///   default)
+    #[cfg(feature = "register-tracing")]
+    pub fn new_debuggable(
+        program_id: &Pubkey,
+        program_name: &str,
+        enable_register_tracing: bool,
+    ) -> Self {
+        let mut mollusk = Self::new_inner(enable_register_tracing);
         mollusk.add_program(program_id, program_name);
         mollusk
     }
@@ -738,21 +797,26 @@ impl Mollusk {
             let runtime_features = self.feature_set.runtime_features();
             let sysvar_cache = self.sysvars.setup_sysvar_cache(accounts);
 
-            let program_runtime_environments = ProgramRuntimeEnvironments {
-                program_runtime_v1: Arc::new(
-                    create_program_runtime_environment_v1(
-                        &runtime_features,
+            let _enable_register_tracing = false;
+            #[cfg(feature = "register-tracing")]
+            let _enable_register_tracing = self.enable_register_tracing;
+
+            let program_runtime_environments: ProgramRuntimeEnvironments =
+                ProgramRuntimeEnvironments {
+                    program_runtime_v1: Arc::new(
+                        create_program_runtime_environment_v1(
+                            &runtime_features,
+                            &execution_budget,
+                            /* reject_deployment_of_broken_elfs */ false,
+                            /* debugging_features */ _enable_register_tracing,
+                        )
+                        .unwrap(),
+                    ),
+                    program_runtime_v2: Arc::new(create_program_runtime_environment_v2(
                         &execution_budget,
-                        /* reject_deployment_of_broken_elfs */ false,
-                        /* debugging_features */ false,
-                    )
-                    .unwrap(),
-                ),
-                program_runtime_v2: Arc::new(create_program_runtime_environment_v2(
-                    &execution_budget,
-                    /* debugging_features */ false,
-                )),
-            };
+                        /* debugging_features */ _enable_register_tracing,
+                    )),
+                };
 
             let mut invoke_context = InvokeContext::new(
                 &mut transaction_context,
@@ -801,7 +865,7 @@ impl Mollusk {
 
             #[cfg(feature = "invocation-inspect-callback")]
             self.invocation_inspect_callback
-                .after_invocation(&invoke_context);
+                .after_invocation(&invoke_context, self.enable_register_tracing);
 
             result
         };
