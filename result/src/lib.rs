@@ -1,45 +1,13 @@
-//! SVM program execution results and validation.
-//!
-//! This crate provides types and utilities for working with the results of
-//! SVM program execution, including validation and comparison capabilities.
-//!
-//! # Core Types
-//!
-//! * [`InstructionResult`] - The main result type containing execution details
-//! * [`ProgramResult`] - The program's execution outcome (success/failure)
-//! * [`ContextResult`] - Result type for use with `MolluskContext`
-//!
-//! # Validation
-//!
-//! * [`Check`] - Validate individual instruction results
-//! * [`Compare`] - Compare two instruction results
-//! * [`Config`] - Configuration for validation behavior
-//! * [`CheckContext`] - Context trait for custom validation logic
-//!
-//! # Example
-//!
-//! ```rust,ignore
-//! use mollusk_svm_result::{Check, Config, InstructionResult};
-//!
-//! let result = InstructionResult::default();
-//! let checks = vec![Check::success(), Check::compute_units(100)];
-//! let config = Config::default();
-//!
-//! result.run_checks(&checks, &config, &mollusk);
-//! ```
+use solana_instruction::error::InstructionError;
 
-pub mod check;
-pub mod compare;
-pub mod config;
-#[cfg(feature = "fuzz")]
-pub mod fuzz;
-pub mod types;
-
-// Re-export the main types and traits for convenience, and for backwards
-// compatibility.
-pub use {
-    check::{AccountCheckBuilder, Check},
-    compare::Compare,
-    config::{CheckContext, Config},
-    types::{InstructionResult, ProgramResult},
-};
+/// The overall result of the instruction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstructionResult {
+    /// The number of compute units consumed by the instruction.
+    pub compute_units_consumed: u32,
+    /// The raw result of the program's execution.
+    pub raw_result: Result<(), InstructionError>,
+    /// The return data produced by the instruction, if any.
+    pub return_data: Vec<u8>,
+    pub messages: Vec<String>,
+}

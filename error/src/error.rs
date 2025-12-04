@@ -1,23 +1,10 @@
 //! Mollusk errors. These errors will throw a panic. They represent
 //! misconfiguration of test inputs or the test environment.
 
-use {
-    solana_pubkey::Pubkey,
-    std::{fmt::Display, path::Path},
-    thiserror::Error,
-};
+use {solana_pubkey::Pubkey, std::fmt::Display, thiserror::Error};
 
 #[derive(Debug, Error)]
 pub enum MolluskError<'a> {
-    /// Failed to open file.
-    #[error("    [MOLLUSK]: Failed to open file: {0}")]
-    FileOpenError(&'a Path),
-    /// Failed to read file.
-    #[error("    [MOLLUSK]: Failed to read file: {0}")]
-    FileReadError(&'a Path),
-    /// Program file not found.
-    #[error("    [MOLLUSK]: Program file not found: {0}")]
-    FileNotFound(&'a str),
     /// An account required by the instruction was not provided.
     #[error("    [MOLLUSK]: An account required by the instruction was not provided: {0}")]
     AccountMissing(&'a Pubkey),

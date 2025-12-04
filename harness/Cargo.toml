@@ -10,63 +10,30 @@ edition = { workspace = true }
 version = { workspace = true }
 
 [features]
-default = []
+default = ["all-builtins"]
 all-builtins = [
     "dep:solana-loader-v4-program",
-    "dep:solana-vote-program",
     "dep:solana-zk-elgamal-proof-program",
-]
-fuzz = [
-    "dep:mollusk-svm-fuzz-fixture",
-    "dep:mollusk-svm-fuzz-fs",
-    "mollusk-svm-result/fuzz",
-]
-fuzz-fd = [
-    "dep:mollusk-svm-fuzz-fixture-firedancer",
-    "dep:mollusk-svm-fuzz-fs",
-]
-invocation-inspect-callback = []
-precompiles = ["dep:agave-precompiles"]
-register-tracing = [
-    "invocation-inspect-callback",
-    "dep:hex",
-    "dep:sha2"
-]
-serde = [
-    "dep:serde",
-    "mollusk-svm-result/serde",
 ]
 
 [dependencies]
-agave-feature-set = { workspace = true, features = ["agave-unstable-api"] }
-agave-precompiles = { workspace = true, features = ["agave-unstable-api"], optional = true }
+agave-feature-set = { workspace = true }
 agave-syscalls = { workspace = true }
+ahash = { workspace = true }
 bincode = { workspace = true }
-hex = { workspace = true, optional = true }
-serde = { workspace = true, features = ["derive"], optional = true }
 mollusk-svm-error = { workspace = true }
-mollusk-svm-fuzz-fixture = { workspace = true, optional = true }
-mollusk-svm-fuzz-fixture-firedancer = { workspace = true, optional = true }
-mollusk-svm-fuzz-fs = { workspace = true, optional = true }
 mollusk-svm-keys = { workspace = true }
 mollusk-svm-result = { workspace = true }
-sha2 = { workspace = true, optional = true }
 solana-account = { workspace = true }
-solana-bpf-loader-program = { workspace = true, features = ["agave-unstable-api"] }
+solana-bpf-loader-program = { workspace = true }
 solana-clock = { workspace = true }
 solana-compute-budget = { workspace = true, features = ["agave-unstable-api"] }
 solana-epoch-rewards = { workspace = true }
 solana-epoch-schedule = { workspace = true }
 solana-hash = { workspace = true }
 solana-instruction = { workspace = true }
-solana-instruction-error = { workspace = true, features = ["serde"] }
-solana-instructions-sysvar = { workspace = true }
-solana-loader-v3-interface = { workspace = true, features = ["serde"] }
-solana-loader-v4-interface = { workspace = true }
 solana-loader-v4-program = { workspace = true, features = ["agave-unstable-api"], optional = true }
 solana-logger = { workspace = true }
-solana-precompile-error = { workspace = true }
-solana-program-error = { workspace = true }
 solana-program-runtime = { workspace = true }
 solana-pubkey = { workspace = true }
 solana-rent = { workspace = true }
@@ -74,29 +41,11 @@ solana-sdk-ids = { workspace = true }
 solana-slot-hashes = { workspace = true }
 solana-stake-interface = { workspace = true }
 solana-svm-callback = { workspace = true }
+solana-svm-feature-set = { workspace = true }
 solana-svm-log-collector = { workspace = true }
 solana-svm-timings = { workspace = true }
 solana-system-program = { workspace = true, features = ["agave-unstable-api"] }
 solana-sysvar = { workspace = true }
 solana-sysvar-id = { workspace = true }
 solana-transaction-context = { workspace = true, features = ["dev-context-only-utils"] }
-solana-vote-program = { workspace = true, features = ["agave-unstable-api"], optional = true }
 solana-zk-elgamal-proof-program = { workspace = true, features = ["agave-unstable-api"], optional = true }
-
-[dev-dependencies]
-criterion = { workspace = true }
-ed25519-dalek = { workspace = true }
-libsecp256k1 = { workspace = true }
-openssl = { workspace = true }
-rand0-7 = { workspace = true }
-rayon = { workspace = true }
-serial_test = { workspace = true }
-solana-ed25519-program = { workspace = true }
-solana-native-token = { workspace = true }
-solana-secp256k1-program = { workspace = true, features = ["bincode"] }
-solana-secp256r1-program = { workspace = true }
-solana-system-interface = { workspace = true }
-
-[[bench]]
-name = "ips"
-harness = false

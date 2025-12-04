@@ -3,23 +3,15 @@
 use {
     agave_feature_set::FeatureSet,
     agave_syscalls::create_program_runtime_environment_v1,
-    solana_account::Account,
+    ahash::HashMap,
     solana_compute_budget::compute_budget::ComputeBudget,
-    solana_loader_v3_interface::state::UpgradeableLoaderState,
-    solana_loader_v4_interface::state::{LoaderV4State, LoaderV4Status},
     solana_program_runtime::{
         invoke_context::{BuiltinFunctionWithContext, InvokeContext},
         loaded_programs::{LoadProgramMetrics, ProgramCacheEntry, ProgramCacheForTxBatch},
         solana_sbpf::program::BuiltinProgram,
     },
     solana_pubkey::Pubkey,
-    solana_rent::Rent,
-    std::{
-        cell::{RefCell, RefMut},
-        collections::HashMap,
-        rc::Rc,
-        sync::Arc,
-    },
+    std::{cell::RefCell, sync::Arc},
 };
 
 /// Loader keys, re-exported from `solana_sdk` for convenience.
@@ -31,33 +23,8 @@ pub mod loader_keys {
     };
 }
 
-#[cfg(feature = "precompiles")]
-pub mod precompile_keys {
-    use solana_pubkey::Pubkey;
-    pub use solana_sdk_ids::{
-        ed25519_program::ID as ED25519_PROGRAM, secp256k1_program::ID as SECP256K1_PROGRAM,
-        secp256r1_program::ID as SECP256R1_PROGRAM,
-    };
-
-    pub(crate) fn is_precompile(program_id: &Pubkey) -> bool {
-        matches!(
-            *program_id,
-            ED25519_PROGRAM | SECP256K1_PROGRAM | SECP256R1_PROGRAM
-        )
-    }
-}
-
-#[cfg(not(feature = "precompiles"))]
-pub mod precompile_keys {
-    use solana_pubkey::Pubkey;
-
-    pub(crate) const fn is_precompile(_program_id: &Pubkey) -> bool {
-        false
-    }
-}
-
 pub struct ProgramCache {
-    cache: Rc<RefCell<ProgramCacheForTxBatch>>,
+    pub cache: RefCell<ProgramCacheForTxBatch>,
     // This stinks, but the `ProgramCacheForTxBatch` doesn't offer a way to
     // access its entries directly. In order to make DX easier for those using
     // `MolluskContext`, we need to track entries added to the cache,
@@ -67,26 +34,22 @@ pub struct ProgramCache {
     // already.
     //
     // K: program ID, V: loader key
-    entries_cache: Rc<RefCell<HashMap<Pubkey, Pubkey>>>,
+    pub entries_cache: RefCell<HashMap<Pubkey, Pubkey>>,
     // The function registry (syscalls) to use for verifying and loading
     // program ELFs.
     pub program_runtime_environment: BuiltinProgram<InvokeContext<'static, 'static>>,
 }
 
 impl ProgramCache {
-    pub fn new(
-        feature_set: &FeatureSet,
-        compute_budget: &ComputeBudget,
-        enable_register_tracing: bool,
-    ) -> Self {
+    pub fn new(feature_set: &FeatureSet, compute_budget: &ComputeBudget) -> Self {
         let me = Self {
-            cache: Rc::new(RefCell::new(ProgramCacheForTxBatch::default())),
-            entries_cache: Rc::new(RefCell::new(HashMap::new())),
+            cache: Default::default(),
+            entries_cache: Default::default(),
             program_runtime_environment: create_program_runtime_environment_v1(
                 &feature_set.runtime_features(),
                 &compute_budget.to_budget(),
                 /* reject_deployment_of_broken_elfs */ false,
-                /* debugging_features */ enable_register_tracing,
+                /* debugging_features */ false,
             )
             .unwrap(),
         };
@@ -98,8 +61,8 @@ impl ProgramCache {
         me
     }
 
-    pub(crate) fn cache(&self) -> RefMut<'_, ProgramCacheForTxBatch> {
-        self.cache.borrow_mut()
+    pub fn has_cache(&self, program_id: &Pubkey) -> bool {
+        self.entries_cache.borrow().contains_key(program_id)
     }
 
     fn replenish(&self, program_id: Pubkey, entry: Arc<ProgramCacheEntry>) {
@@ -156,46 +119,6 @@ impl ProgramCache {
     pub fn load_program(&self, program_id: &Pubkey) -> Option<Arc<ProgramCacheEntry>> {
         self.cache.borrow().find(program_id)
     }
-
-    // NOTE: These are only stubs. This will "just work", since Agave's SVM
-    // stubs out program accounts in transaction execution already, noting that
-    // the ELFs are already where they need to be: in the cache.
-    pub(crate) fn get_all_keyed_program_accounts(&self) -> Vec<(Pubkey, Account)> {
-        self.entries_cache
-            .borrow()
-            .iter()
-            .map(|(program_id, loader_key)| match *loader_key {
-                loader_keys::NATIVE_LOADER => {
-                    create_keyed_account_for_builtin_program(program_id, "I'm a stub!")
-                }
-                loader_keys::LOADER_V1 => (*program_id, create_program_account_loader_v1(&[])),
-                loader_keys::LOADER_V2 => (*program_id, create_program_account_loader_v2(&[])),
-                loader_keys::LOADER_V3 => {
-                    (*program_id, create_program_account_loader_v3(program_id))
-                }
-                loader_keys::LOADER_V4 => (*program_id, create_program_account_loader_v4(&[])),
-                _ => panic!("Invalid loader key: {}", loader_key),
-            })
-            .collect()
-    }
-
-    pub(crate) fn maybe_create_program_account(&self, pubkey: &Pubkey) -> Option<Account> {
-        // If it's found in the entries cache, create the proper program account based
-        // on the loader key.
-        self.entries_cache
-            .borrow()
-            .get(pubkey)
-            .map(|loader_key| match *loader_key {
-                loader_keys::NATIVE_LOADER => {
-                    create_keyed_account_for_builtin_program(pubkey, "I'm a stub!").1
-                }
-                loader_keys::LOADER_V1 => create_program_account_loader_v1(&[]),
-                loader_keys::LOADER_V2 => create_program_account_loader_v2(&[]),
-                loader_keys::LOADER_V3 => create_program_account_loader_v3(pubkey),
-                loader_keys::LOADER_V4 => create_program_account_loader_v4(&[]),
-                _ => panic!("Invalid loader key: {}", loader_key),
-            })
-    }
 }
 
 pub struct Builtin {
@@ -249,146 +172,3 @@ static BUILTINS: &[Builtin] = &[
         entrypoint: solana_zk_elgamal_proof_program::Entrypoint::vm,
     },
 ];
-
-/// Create a key and account for a builtin program.
-pub fn create_keyed_account_for_builtin_program(
-    program_id: &Pubkey,
-    name: &str,
-) -> (Pubkey, Account) {
-    let data = name.as_bytes().to_vec();
-    let lamports = Rent::default().minimum_balance(data.len());
-    let account = Account {
-        lamports,
-        data,
-        owner: loader_keys::NATIVE_LOADER,
-        executable: true,
-        ..Default::default()
-    };
-    (*program_id, account)
-}
-
-/// Get the key and account for the system program.
-pub fn keyed_account_for_system_program() -> (Pubkey, Account) {
-    create_keyed_account_for_builtin_program(&BUILTINS[0].program_id, BUILTINS[0].name)
-}
-
-/// Get the key and account for the BPF Loader v2 program.
-pub fn keyed_account_for_bpf_loader_v2_program() -> (Pubkey, Account) {
-    create_keyed_account_for_builtin_program(&BUILTINS[1].program_id, BUILTINS[1].name)
-}
-
-/// Get the key and account for the BPF Loader v3 (Upgradeable) program.
-pub fn keyed_account_for_bpf_loader_v3_program() -> (Pubkey, Account) {
-    create_keyed_account_for_builtin_program(&BUILTINS[2].program_id, BUILTINS[2].name)
-}
-
-/* ... */
-
-/// Create a BPF Loader 1 (deprecated) program account.
-pub fn create_program_account_loader_v1(elf: &[u8]) -> Account {
-    let lamports = Rent::default().minimum_balance(elf.len());
-    Account {
-        lamports,
-        data: elf.to_vec(),
-        owner: loader_keys::LOADER_V1,
-        executable: true,
-        ..Default::default()
-    }
-}
-
-/// Create a BPF Loader 2 program account.
-pub fn create_program_account_loader_v2(elf: &[u8]) -> Account {
-    let lamports = Rent::default().minimum_balance(elf.len());
-    Account {
-        lamports,
-        data: elf.to_vec(),
-        owner: loader_keys::LOADER_V2,
-        executable: true,
-        ..Default::default()
-    }
-}
-
-/// Create a BPF Loader v3 (Upgradeable) program account.
-pub fn create_program_account_loader_v3(program_id: &Pubkey) -> Account {
-    let programdata_address =
-        Pubkey::find_program_address(&[program_id.as_ref()], &loader_keys::LOADER_V3).0;
-    let data = bincode::serialize(&UpgradeableLoaderState::Program {
-        programdata_address,
-    })
-    .unwrap();
-    let lamports = Rent::default().minimum_balance(data.len());
-    Account {
-        lamports,
-        data,
-        owner: loader_keys::LOADER_V3,
-        executable: true,
-        ..Default::default()
-    }
-}
-
-/// Create a BPF Loader v3 (Upgradeable) program data account.
-pub fn create_program_data_account_loader_v3(elf: &[u8]) -> Account {
-    let data = {
-        let elf_offset = UpgradeableLoaderState::size_of_programdata_metadata();
-        let data_len = elf_offset + elf.len();
-        let mut data = vec![0; data_len];
-        bincode::serialize_into(
-            &mut data[0..elf_offset],
-            &UpgradeableLoaderState::ProgramData {
-                slot: 0,
-                upgrade_authority_address: None,
-            },
-        )
-        .unwrap();
-        data[elf_offset..].copy_from_slice(elf);
-        data
-    };
-    let lamports = Rent::default().minimum_balance(data.len());
-    Account {
-        lamports,
-        data,
-        owner: loader_keys::LOADER_V3,
-        executable: false,
-        ..Default::default()
-    }
-}
-
-/// Create a BPF Loader v3 (Upgradeable) program and program data account.
-///
-/// Returns a tuple, where the first element is the program account and the
-/// second element is the program data account.
-pub fn create_program_account_pair_loader_v3(
-    program_id: &Pubkey,
-    elf: &[u8],
-) -> (Account, Account) {
-    (
-        create_program_account_loader_v3(program_id),
-        create_program_data_account_loader_v3(elf),
-    )
-}
-
-/// Create a BPF Loader 4 program account.
-pub fn create_program_account_loader_v4(elf: &[u8]) -> Account {
-    let data = unsafe {
-        let elf_offset = LoaderV4State::program_data_offset();
-        let data_len = elf_offset + elf.len();
-        let mut data = vec![0u8; data_len];
-        *std::mem::transmute::<&mut [u8; LoaderV4State::program_data_offset()], &mut LoaderV4State>(
-            (&mut data[0..elf_offset]).try_into().unwrap(),
-        ) = LoaderV4State {
-            slot: 0,
-            authority_address_or_next_version: Pubkey::new_from_array([2; 32]),
-            status: LoaderV4Status::Deployed,
-        };
-        data[elf_offset..].copy_from_slice(elf);
-        data
-    };
-    let lamports = Rent::default().minimum_balance(data.len());
-    Account {
-        lamports,
-        data,
-        owner: loader_keys::LOADER_V3,
-        executable: false,
-        ..Default::default()
-    }
-}
