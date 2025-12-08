@@ -388,6 +388,151 @@ fn test_cpi() {
 }
 
 #[test]
+#[cfg(feature = "inner-instructions")]
+fn test_inner_instructions_cpi() {
+    std::env::set_var("SBF_OUT_DIR", "../target/deploy");
+
+    let program_id = Pubkey::new_unique();
+    let cpi_target_program_id = Pubkey::new_unique();
+
+    let mut mollusk = Mollusk::new(&program_id, "test_program_primary");
+
+    mollusk.add_program_with_loader(
+        &cpi_target_program_id,
+        "test_program_cpi_target",
+        &mollusk_svm::program::loader_keys::LOADER_V3,
+    );
+
+    let data = &[1, 2, 3, 4, 5];
+    let space = data.len();
+    let lamports = mollusk.sysvars.rent.minimum_balance(space);
+
+    let key = Pubkey::new_unique();
+    let account = Account::new(lamports, space, &cpi_target_program_id);
+
+    let instruction = {
+        let mut instruction_data = vec![4];
+        instruction_data.extend_from_slice(cpi_target_program_id.as_ref());
+        instruction_data.extend_from_slice(data);
+        Instruction::new_with_bytes(
+            program_id,
+            &instruction_data,
+            vec![
+                AccountMeta::new(key, true),
+                AccountMeta::new_readonly(cpi_target_program_id, false),
+            ],
+        )
+    };
+
+    let result = mollusk.process_and_validate_instruction(
+        &instruction,
+        &[
+            (key, account.clone()),
+            (
+                cpi_target_program_id,
+                create_program_account_loader_v3(&cpi_target_program_id),
+            ),
+        ],
+        &[
+            Check::success(),
+            Check::inner_instruction_count(1),
+            Check::account(&key)
+                .data(data)
+                .lamports(lamports)
+                .owner(&cpi_target_program_id)
+                .space(space)
+                .build(),
+        ],
+    );
+
+    let inner_ix = &result.inner_instructions[0];
+    assert_eq!(inner_ix.stack_height, Some(2));
+    assert_eq!(
+        inner_ix.instruction.program_id_index as usize, 1,
+        "Inner instruction program_id_index should point to the CPI target"
+    );
+    assert_eq!(
+        &inner_ix.instruction.data[0], &1u8,
+        "Inner instruction should be WriteData (1)"
+    );
+    assert_eq!(
+        &inner_ix.instruction.data[1..],
+        &data[1..],
+        "Inner instruction data should match the CPI call"
+    );
+    assert_eq!(
+        inner_ix.instruction.accounts,
+        vec![2],
+        "Inner instruction accounts should reference the key account"
+    );
+}
+
+#[test]
+#[cfg(feature = "inner-instructions")]
+fn test_inner_instructions_transfer() {
+    std::env::set_var("SBF_OUT_DIR", "../target/deploy");
+
+    let program_id = Pubkey::new_unique();
+    let mollusk = Mollusk::new(&program_id, "test_program_primary");
+
+    let payer = Pubkey::new_unique();
+    let payer_lamports = 100_000_000;
+    let payer_account = Account::new(payer_lamports, 0, &solana_sdk_ids::system_program::id());
+
+    let recipient = Pubkey::new_unique();
+    let recipient_lamports = 0;
+    let recipient_account =
+        Account::new(recipient_lamports, 0, &solana_sdk_ids::system_program::id());
+
+    let transfer_amount = 2_000_000_u64;
+
+    let transfer_instruction = {
+        let mut instruction_data = vec![2];
+        instruction_data.extend_from_slice(&transfer_amount.to_le_bytes());
+        Instruction::new_with_bytes(
+            program_id,
+            &instruction_data,
+            vec![
+                AccountMeta::new(payer, true),
+                AccountMeta::new(recipient, false),
+                AccountMeta::new_readonly(solana_sdk_ids::system_program::id(), false),
+            ],
+        )
+    };
+
+    let result = mollusk.process_and_validate_instruction(
+        &transfer_instruction,
+        &[
+            (payer, payer_account.clone()),
+            (recipient, recipient_account.clone()),
+            keyed_account_for_system_program(),
+        ],
+        &[
+            Check::success(),
+            Check::inner_instruction_count(1),
+            Check::account(&payer)
+                .lamports(payer_lamports - transfer_amount)
+                .build(),
+            Check::account(&recipient)
+                .lamports(recipient_lamports + transfer_amount)
+                .build(),
+        ],
+    );
+
+    let inner_ix = &result.inner_instructions[0];
+    assert_eq!(inner_ix.stack_height, Some(2));
+    assert_eq!(
+        inner_ix.instruction.program_id_index as usize, 0,
+        "Inner instruction should invoke the system program"
+    );
+    assert_eq!(
+        inner_ix.instruction.accounts,
+        vec![2, 3],
+        "Inner instruction accounts should reference payer and recipient"
+    );
+}
+
+#[test]
 fn test_account_dedupe() {
     std::env::set_var("SBF_OUT_DIR", "../target/deploy");
 
