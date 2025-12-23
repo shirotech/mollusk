@@ -2289,6 +2289,7 @@ dependencies = [
  "solana-sysvar",
  "solana-sysvar-id",
  "solana-transaction-context",
+ "solana-transaction-error",
  "solana-transaction-status-client-types",
  "solana-vote-program",
  "solana-zk-elgamal-proof-program",
@@ -2421,6 +2422,7 @@ dependencies = [
  "solana-program-error",
  "solana-pubkey 4.0.0",
  "solana-rent",
+ "solana-transaction-error",
  "solana-transaction-status-client-types",
 ]
 

@@ -11,19 +11,18 @@ use {
 };
 
 pub fn compile_accounts<'a>(
-    instruction: &Instruction,
+    instructions: &[Instruction],
     accounts: impl Iterator<Item = &'a (Pubkey, Account)>,
     fallback_accounts: &HashMap<Pubkey, Account>,
 ) -> (SanitizedMessage, Vec<(Pubkey, AccountSharedData)>) {
-    let message = Message::new(std::slice::from_ref(instruction), None);
+    let message = Message::new(instructions, None);
     let sanitized_message = SanitizedMessage::Legacy(LegacyMessage::new(message, &HashSet::new()));
 
     let accounts: Vec<_> = accounts.collect();
     let transaction_accounts = build_transaction_accounts(
         &sanitized_message,
-        instruction.program_id,
         &accounts,
-        std::slice::from_ref(instruction),
+        instructions,
         fallback_accounts,
     );
 
@@ -32,16 +31,17 @@ pub fn compile_accounts<'a>(
 
 fn build_transaction_accounts(
     message: &SanitizedMessage,
-    program_id: Pubkey,
     accounts: &[&(Pubkey, Account)],
     all_instructions: &[Instruction],
     fallback_accounts: &HashMap<Pubkey, Account>,
 ) -> Vec<(Pubkey, AccountSharedData)> {
+    let program_ids: HashSet<Pubkey> = all_instructions.iter().map(|ix| ix.program_id).collect();
+
     message
         .account_keys()
         .iter()
         .map(|key| {
-            if *key == program_id {
+            if program_ids.contains(key) {
                 if let Some(provided_account) = accounts.iter().find(|(k, _)| k == key) {
                     return (*key, AccountSharedData::from(provided_account.1.clone()));
                 }

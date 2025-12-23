@@ -471,15 +471,21 @@ use {
         create_program_runtime_environment_v1, create_program_runtime_environment_v2,
     },
     mollusk_svm_error::error::{MolluskError, MolluskPanic},
-    mollusk_svm_result::{Check, CheckContext, Config, InstructionResult},
+    mollusk_svm_result::{
+        types::{TransactionProgramResult, TransactionResult},
+        Check, CheckContext, Config, InstructionResult,
+    },
     solana_account::{Account, AccountSharedData, ReadableAccount},
     solana_compute_budget::compute_budget::ComputeBudget,
     solana_hash::Hash,
     solana_instruction::{AccountMeta, Instruction},
+    solana_instruction_error::InstructionError,
     solana_message::SanitizedMessage,
+    solana_program_error::ProgramError,
     solana_program_runtime::{
         invoke_context::{EnvironmentConfig, InvokeContext},
         loaded_programs::ProgramRuntimeEnvironments,
+        sysvar_cache::SysvarCache,
     },
     solana_pubkey::Pubkey,
     solana_svm_callback::InvokeContextCallback,
@@ -487,6 +493,7 @@ use {
     solana_svm_timings::ExecuteTimings,
     solana_svm_transaction::instruction::SVMInstruction,
     solana_transaction_context::{IndexOfAccount, TransactionContext},
+    solana_transaction_error::TransactionError,
     std::{
         cell::RefCell,
         collections::{HashMap, HashSet},
@@ -632,6 +639,59 @@ impl InvokeContextCallback for MolluskInvokeContextCallback<'_> {
         _instruction_datas: Vec<&[u8]>,
     ) -> Result<(), solana_precompile_error::PrecompileError> {
         panic!("precompiles feature not enabled");
+    }
+}
+
+struct MessageResult {
+    /// The number of compute units consumed by the transaction.
+    pub compute_units_consumed: u64,
+    /// The time taken to execute the transaction, in microseconds.
+    pub execution_time: u64,
+    /// The raw result of the transaction's execution.
+    pub raw_result: Result<(), TransactionError>,
+    /// The return data produced by the transaction, if any.
+    pub return_data: Vec<u8>,
+    /// Inner instructions (CPIs) invoked during the transaction execution.
+    ///
+    /// Each entry represents a cross-program invocation made by the program,
+    /// including the invoked instruction and the stack height at which it
+    /// was called.
+    #[cfg(feature = "inner-instructions")]
+    pub inner_instructions: Vec<Vec<InnerInstruction>>,
+    /// The compiled message used to execute the transaction.
+    ///
+    /// This can be used to map account indices in inner instructions back to
+    /// their corresponding pubkeys via `message.account_keys()`.
+    ///
+    /// This is `None` when the result is loaded from a fuzz fixture, since
+    /// fixtures don't contain the compiled message.
+    #[cfg(feature = "inner-instructions")]
+    pub message: Option<SanitizedMessage>,
+}
+
+impl MessageResult {
+    fn extract_ix_err(txn_err: TransactionError) -> InstructionError {
+        match txn_err {
+            TransactionError::InstructionError(_, ix_err) => ix_err,
+            _ => unreachable!(), // Mollusk only uses `InstructionError` variant.
+        }
+    }
+
+    fn extract_txn_program_result(
+        raw_result: &Result<(), TransactionError>,
+    ) -> TransactionProgramResult {
+        match raw_result {
+            Ok(()) => TransactionProgramResult::Success,
+            Err(TransactionError::InstructionError(idx, ix_err)) => {
+                let index = *idx as usize;
+                if let Ok(program_error) = ProgramError::try_from(ix_err.clone()) {
+                    TransactionProgramResult::Failure(index, program_error)
+                } else {
+                    TransactionProgramResult::UnknownError(index, ix_err.clone())
+                }
+            }
+            _ => unreachable!(), // Mollusk only uses `InstructionError` variant.
+        }
     }
 }
 
@@ -820,106 +880,136 @@ impl Mollusk {
         fallbacks
     }
 
-    #[cfg(feature = "inner-instructions")]
-    fn deconstruct_transaction(
-        transaction_context: &mut TransactionContext,
-    ) -> Vec<InnerInstruction> {
-        const TRANSACTION_LEVEL_STACK_HEIGHT: usize = 1;
-
-        let ix_trace = transaction_context.take_instruction_trace();
-        ix_trace
-            .into_iter()
-            .filter_map(|ix_in_trace| {
-                let stack_height = ix_in_trace.nesting_level.saturating_add(1);
-                if stack_height > TRANSACTION_LEVEL_STACK_HEIGHT {
-                    let stack_height = u32::try_from(stack_height).ok();
-                    Some(InnerInstruction {
-                        instruction: CompiledInstruction::new_from_raw_parts(
-                            ix_in_trace.program_account_index_in_tx as u8,
-                            ix_in_trace.instruction_data.to_vec(),
-                            ix_in_trace
-                                .instruction_accounts
-                                .iter()
-                                .map(|acc| acc.index_in_transaction as u8)
-                                .collect(),
-                        ),
-                        stack_height,
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    fn process_instruction_inner(
+    fn create_transaction_context(
         &self,
-        instruction_index: usize,
-        instruction: &Instruction,
-        accounts: &[(Pubkey, Account)],
-        sanitized_message: &SanitizedMessage,
         transaction_accounts: Vec<(Pubkey, AccountSharedData)>,
-    ) -> InstructionResult {
-        let mut compute_units_consumed = 0;
-        let mut timings = ExecuteTimings::default();
-
-        let mut transaction_context = TransactionContext::new(
+    ) -> TransactionContext<'_> {
+        TransactionContext::new(
             transaction_accounts,
             self.sysvars.rent.clone(),
             self.compute_budget.max_instruction_stack_depth,
             self.compute_budget.max_instruction_trace_length,
-        );
-        transaction_context.set_top_level_instruction_index(instruction_index);
+        )
+    }
 
-        let invoke_result = {
-            let mut program_cache = self.program_cache.cache();
-            let callback = MolluskInvokeContextCallback {
-                epoch_stake: &self.epoch_stake,
-                feature_set: &self.feature_set,
-            };
-            let execution_budget = self.compute_budget.to_budget();
-            let runtime_features = self.feature_set.runtime_features();
-            let sysvar_cache = self.sysvars.setup_sysvar_cache(accounts);
+    #[cfg(feature = "inner-instructions")]
+    fn deconstruct_inner_instructions(
+        transaction_context: &mut TransactionContext,
+    ) -> Vec<Vec<InnerInstruction>> {
+        let ix_trace = transaction_context.take_instruction_trace();
+        let mut all_inner_instructions: Vec<Vec<InnerInstruction>> = Vec::new();
 
-            let _enable_register_tracing = false;
-            #[cfg(feature = "register-tracing")]
-            let _enable_register_tracing = self.enable_register_tracing;
+        for ix_in_trace in ix_trace {
+            let stack_height = ix_in_trace.nesting_level.saturating_add(1);
 
-            let program_runtime_environments: ProgramRuntimeEnvironments =
-                ProgramRuntimeEnvironments {
-                    program_runtime_v1: Arc::new(
-                        create_program_runtime_environment_v1(
-                            &runtime_features,
-                            &execution_budget,
-                            /* reject_deployment_of_broken_elfs */ false,
-                            /* debugging_features */ _enable_register_tracing,
-                        )
-                        .unwrap(),
+            if stack_height == 1 {
+                // Top-level instruction: start a new empty group for its inner instructions.
+                all_inner_instructions.push(Vec::new());
+            } else if let Some(last_group) = all_inner_instructions.last_mut() {
+                // Inner instruction (CPI): add to the current group.
+                let inner_instruction = InnerInstruction {
+                    instruction: CompiledInstruction::new_from_raw_parts(
+                        ix_in_trace.program_account_index_in_tx as u8,
+                        ix_in_trace.instruction_data.to_vec(),
+                        ix_in_trace
+                            .instruction_accounts
+                            .iter()
+                            .map(|acc| acc.index_in_transaction as u8)
+                            .collect(),
                     ),
-                    program_runtime_v2: Arc::new(create_program_runtime_environment_v2(
-                        &execution_budget,
-                        /* debugging_features */ _enable_register_tracing,
-                    )),
+                    stack_height: u32::try_from(stack_height).ok(),
                 };
+                last_group.push(inner_instruction);
+            }
+        }
 
-            let mut invoke_context = InvokeContext::new(
-                &mut transaction_context,
-                &mut program_cache,
-                EnvironmentConfig::new(
-                    Hash::default(),
-                    /* blockhash_lamports_per_signature */ 5000, // The default value
-                    &callback,
+        all_inner_instructions
+    }
+
+    fn deconstruct_resulting_accounts(
+        transaction_context: &TransactionContext,
+        original_accounts: &[(Pubkey, Account)],
+    ) -> Vec<(Pubkey, Account)> {
+        original_accounts
+            .iter()
+            .map(|(pubkey, account)| {
+                transaction_context
+                    .find_index_of_account(pubkey)
+                    .map(|index| {
+                        let account_ref = transaction_context.accounts().try_borrow(index).unwrap();
+                        let resulting_account = Account {
+                            lamports: account_ref.lamports(),
+                            data: account_ref.data().to_vec(),
+                            owner: *account_ref.owner(),
+                            executable: account_ref.executable(),
+                            rent_epoch: account_ref.rent_epoch(),
+                        };
+                        (*pubkey, resulting_account)
+                    })
+                    .unwrap_or((*pubkey, account.clone()))
+            })
+            .collect()
+    }
+
+    fn process_transaction_message<'a>(
+        &self,
+        sanitized_message: &'a SanitizedMessage,
+        transaction_context: &mut TransactionContext<'a>,
+        sysvar_cache: &SysvarCache,
+    ) -> MessageResult {
+        let mut compute_units_consumed = 0;
+        let mut timings = ExecuteTimings::default();
+
+        let mut program_cache = self.program_cache.cache();
+        let callback = MolluskInvokeContextCallback {
+            epoch_stake: &self.epoch_stake,
+            feature_set: &self.feature_set,
+        };
+        let execution_budget = self.compute_budget.to_budget();
+        let runtime_features = self.feature_set.runtime_features();
+
+        let _enable_register_tracing = false;
+        #[cfg(feature = "register-tracing")]
+        let _enable_register_tracing = self.enable_register_tracing;
+
+        let program_runtime_environments: ProgramRuntimeEnvironments = ProgramRuntimeEnvironments {
+            program_runtime_v1: Arc::new(
+                create_program_runtime_environment_v1(
                     &runtime_features,
-                    &program_runtime_environments,
-                    &program_runtime_environments,
-                    &sysvar_cache,
-                ),
-                self.logger.clone(),
-                self.compute_budget.to_budget(),
-                self.compute_budget.to_cost(),
-            );
+                    &execution_budget,
+                    /* reject_deployment_of_broken_elfs */ false,
+                    /* debugging_features */ _enable_register_tracing,
+                )
+                .unwrap(),
+            ),
+            program_runtime_v2: Arc::new(create_program_runtime_environment_v2(
+                &execution_budget,
+                /* debugging_features */ _enable_register_tracing,
+            )),
+        };
 
-            let compiled_ix = sanitized_message.instructions().first().unwrap();
+        let mut invoke_context = InvokeContext::new(
+            transaction_context,
+            &mut program_cache,
+            EnvironmentConfig::new(
+                Hash::default(),
+                /* blockhash_lamports_per_signature */ 5000, // The default value
+                &callback,
+                &runtime_features,
+                &program_runtime_environments,
+                &program_runtime_environments,
+                sysvar_cache,
+            ),
+            self.logger.clone(),
+            self.compute_budget.to_budget(),
+            self.compute_budget.to_cost(),
+        );
+
+        let mut raw_result = Ok(());
+
+        for (instruction_index, (program_id, compiled_ix)) in
+            sanitized_message.program_instructions_iter().enumerate()
+        {
             let program_id_index = compiled_ix.program_id_index as IndexOfAccount;
 
             invoke_context
@@ -927,7 +1017,7 @@ impl Mollusk {
                     sanitized_message,
                     &SVMInstruction::from(compiled_ix),
                     program_id_index,
-                    &instruction.data,
+                    &compiled_ix.data,
                 )
                 .expect("failed to prepare instruction");
 
@@ -939,18 +1029,18 @@ impl Mollusk {
                     .unwrap();
                 let instruction_accounts = instruction_context.instruction_accounts().to_vec();
                 self.invocation_inspect_callback.before_invocation(
-                    &instruction.program_id,
-                    &instruction.data,
+                    program_id,
+                    &compiled_ix.data,
                     &instruction_accounts,
                     &invoke_context,
                 );
             }
 
-            let result = if invoke_context.is_precompile(&instruction.program_id) {
+            let invoke_result = if invoke_context.is_precompile(program_id) {
                 invoke_context.process_precompile(
-                    &instruction.program_id,
-                    &instruction.data,
-                    std::iter::once(instruction.data.as_ref()),
+                    program_id,
+                    &compiled_ix.data,
+                    std::iter::once(compiled_ix.data.as_ref()),
                 )
             } else {
                 invoke_context.process_instruction(&mut compute_units_consumed, &mut timings)
@@ -960,46 +1050,25 @@ impl Mollusk {
             self.invocation_inspect_callback
                 .after_invocation(&invoke_context, self.enable_register_tracing);
 
-            result
-        };
+            if let Err(err) = invoke_result {
+                raw_result = Err(TransactionError::InstructionError(
+                    instruction_index as u8,
+                    err,
+                ));
+                break;
+            }
+        }
 
         let return_data = transaction_context.get_return_data().1.to_vec();
 
         #[cfg(feature = "inner-instructions")]
-        let inner_instructions = Self::deconstruct_transaction(&mut transaction_context);
+        let inner_instructions = Self::deconstruct_inner_instructions(transaction_context);
 
-        let resulting_accounts: Vec<(Pubkey, Account)> = if invoke_result.is_ok() {
-            accounts
-                .iter()
-                .map(|(pubkey, account)| {
-                    transaction_context
-                        .find_index_of_account(pubkey)
-                        .map(|index| {
-                            let account_ref =
-                                transaction_context.accounts().try_borrow(index).unwrap();
-                            let resulting_account = Account {
-                                lamports: account_ref.lamports(),
-                                data: account_ref.data().to_vec(),
-                                owner: *account_ref.owner(),
-                                executable: account_ref.executable(),
-                                rent_epoch: account_ref.rent_epoch(),
-                            };
-                            (*pubkey, resulting_account)
-                        })
-                        .unwrap_or((*pubkey, account.clone()))
-                })
-                .collect()
-        } else {
-            accounts.to_vec()
-        };
-
-        InstructionResult {
+        MessageResult {
             compute_units_consumed,
             execution_time: timings.details.execute_us.0,
-            program_result: invoke_result.clone().into(),
-            raw_result: invoke_result,
+            raw_result,
             return_data,
-            resulting_accounts,
             #[cfg(feature = "inner-instructions")]
             inner_instructions,
             #[cfg(feature = "inner-instructions")]
@@ -1014,8 +1083,6 @@ impl Mollusk {
         instruction: &Instruction,
         accounts: &[(Pubkey, Account)],
     ) -> InstructionResult {
-        const INDEX: usize = 0;
-
         let fallback_accounts = self.get_account_fallbacks(
             std::iter::once(&instruction.program_id),
             std::iter::once(instruction),
@@ -1023,18 +1090,46 @@ impl Mollusk {
         );
 
         let (sanitized_message, transaction_accounts) = crate::compile_accounts::compile_accounts(
-            instruction,
+            std::slice::from_ref(instruction),
             accounts.iter(),
             &fallback_accounts,
         );
 
-        self.process_instruction_inner(
-            INDEX,
-            instruction,
-            accounts,
+        let mut transaction_context = self.create_transaction_context(transaction_accounts);
+        let sysvar_cache = self.sysvars.setup_sysvar_cache(accounts);
+
+        let message_result = self.process_transaction_message(
             &sanitized_message,
-            transaction_accounts,
-        )
+            &mut transaction_context,
+            &sysvar_cache,
+        );
+
+        let resulting_accounts = if message_result.raw_result.is_ok() {
+            Self::deconstruct_resulting_accounts(&transaction_context, accounts)
+        } else {
+            accounts.to_vec()
+        };
+
+        let raw_result = message_result
+            .raw_result
+            .map_err(MessageResult::extract_ix_err);
+
+        InstructionResult {
+            compute_units_consumed: message_result.compute_units_consumed,
+            execution_time: message_result.execution_time,
+            program_result: raw_result.clone().into(),
+            raw_result,
+            return_data: message_result.return_data,
+            resulting_accounts,
+            #[cfg(feature = "inner-instructions")]
+            inner_instructions: message_result
+                .inner_instructions
+                .into_iter()
+                .next()
+                .unwrap_or_default(),
+            #[cfg(feature = "inner-instructions")]
+            message: message_result.message,
+        }
     }
 
     /// Process a chain of instructions using the minified Solana Virtual
@@ -1047,6 +1142,12 @@ impl Mollusk {
     /// * `program_result`: The program result of the _last_ instruction.
     /// * `resulting_accounts`: The resulting accounts after the _last_
     ///   instruction.
+    ///
+    /// Note: Unlike `process_transaction_instructions`, this creates a new
+    /// transaction context for each instruction, bypassing any
+    /// transaction-level restrictions and treating each instruction in the
+    /// chain as its own standalone invocation. However, account changes are
+    /// persisted between invocations.
     pub fn process_instruction_chain(
         &self,
         instructions: &[Instruction],
@@ -1063,23 +1164,53 @@ impl Mollusk {
             accounts,
         );
 
+        let sysvar_cache = self.sysvars.setup_sysvar_cache(accounts);
+
         for (index, instruction) in instructions.iter().enumerate() {
             let accounts = &composite_result.resulting_accounts;
 
             let (sanitized_message, transaction_accounts) =
                 crate::compile_accounts::compile_accounts(
-                    instruction,
+                    std::slice::from_ref(instruction),
                     accounts.iter(),
                     &fallback_accounts,
                 );
 
-            let this_result = self.process_instruction_inner(
-                index,
-                instruction,
-                accounts,
+            let mut transaction_context = self.create_transaction_context(transaction_accounts);
+            transaction_context.set_top_level_instruction_index(index);
+
+            let message_result = self.process_transaction_message(
                 &sanitized_message,
-                transaction_accounts,
+                &mut transaction_context,
+                &sysvar_cache,
             );
+
+            let resulting_accounts = if message_result.raw_result.is_ok() {
+                Self::deconstruct_resulting_accounts(&transaction_context, accounts)
+            } else {
+                accounts.to_vec()
+            };
+
+            let raw_result = message_result
+                .raw_result
+                .map_err(MessageResult::extract_ix_err);
+
+            let this_result = InstructionResult {
+                compute_units_consumed: message_result.compute_units_consumed,
+                execution_time: message_result.execution_time,
+                program_result: raw_result.clone().into(),
+                raw_result,
+                return_data: message_result.return_data,
+                resulting_accounts,
+                #[cfg(feature = "inner-instructions")]
+                inner_instructions: message_result
+                    .inner_instructions
+                    .into_iter()
+                    .nth(index)
+                    .unwrap_or_default(),
+                #[cfg(feature = "inner-instructions")]
+                message: message_result.message,
+            };
 
             composite_result.absorb(this_result);
 
@@ -1089,6 +1220,70 @@ impl Mollusk {
         }
 
         composite_result
+    }
+
+    /// Process multiple instructions using a single shared transaction context.
+    ///
+    /// This API is the closest Mollusk offers to a transaction. All
+    /// instructions are processed in the same message using the same
+    /// transaction context. The result is atomic, meaning resulting accounts
+    /// only reflect the end state of the entire instruction set if all are
+    /// successful. Upon any error, the execution is returned immediately.
+    ///
+    /// The returned result is a `TransactionResult`, containing:
+    ///
+    /// * `compute_units_consumed`: The total compute units consumed across all
+    ///   instructions.
+    /// * `execution_time`: The total execution time across all instructions.
+    /// * `program_result`: The result code of the last program's execution and
+    ///   its index.
+    /// * `resulting_accounts`: The resulting accounts after all instructions.
+    pub fn process_transaction_instructions(
+        &self,
+        instructions: &[Instruction],
+        accounts: &[(Pubkey, Account)],
+    ) -> TransactionResult {
+        let fallback_accounts = self.get_account_fallbacks(
+            instructions.iter().map(|ix| &ix.program_id),
+            instructions.iter(),
+            accounts,
+        );
+
+        let (sanitized_message, transaction_accounts) = crate::compile_accounts::compile_accounts(
+            instructions,
+            accounts.iter(),
+            &fallback_accounts,
+        );
+
+        let mut transaction_context = self.create_transaction_context(transaction_accounts);
+        let sysvar_cache = self.sysvars.setup_sysvar_cache(accounts);
+
+        let message_result = self.process_transaction_message(
+            &sanitized_message,
+            &mut transaction_context,
+            &sysvar_cache,
+        );
+
+        let resulting_accounts = if message_result.raw_result.is_ok() {
+            Self::deconstruct_resulting_accounts(&transaction_context, accounts)
+        } else {
+            accounts.to_vec()
+        };
+
+        let program_result = MessageResult::extract_txn_program_result(&message_result.raw_result);
+
+        TransactionResult {
+            compute_units_consumed: message_result.compute_units_consumed,
+            execution_time: message_result.execution_time,
+            program_result,
+            raw_result: message_result.raw_result,
+            return_data: message_result.return_data,
+            resulting_accounts,
+            #[cfg(feature = "inner-instructions")]
+            inner_instructions: message_result.inner_instructions,
+            #[cfg(feature = "inner-instructions")]
+            message: message_result.message,
+        }
     }
 
     /// Process an instruction using the minified Solana Virtual Machine (SVM)
@@ -1119,27 +1314,7 @@ impl Mollusk {
         accounts: &[(Pubkey, Account)],
         checks: &[Check],
     ) -> InstructionResult {
-        const INDEX: usize = 0;
-
-        let fallback_accounts = self.get_account_fallbacks(
-            std::iter::once(&instruction.program_id),
-            std::iter::once(instruction),
-            accounts,
-        );
-
-        let (sanitized_message, transaction_accounts) = crate::compile_accounts::compile_accounts(
-            instruction,
-            accounts.iter(),
-            &fallback_accounts,
-        );
-
-        let result = self.process_instruction_inner(
-            INDEX,
-            instruction,
-            accounts,
-            &sanitized_message,
-            transaction_accounts,
-        );
+        let result = self.process_instruction(instruction, accounts);
 
         #[cfg(any(feature = "fuzz", feature = "fuzz-fd"))]
         fuzz::generate_fixtures_from_mollusk_test(self, instruction, accounts, &result);
@@ -1172,6 +1347,12 @@ impl Mollusk {
     /// (ie. `EJECT_FUZZ_FIXTURES_FD`). This will generate Firedancer fuzzing
     /// fixtures, which are structured a bit differently than Mollusk's own
     /// protobuf layouts.
+    ///
+    /// Note: Unlike `process_and_validate_transaction_instructions`, this
+    /// creates a new transaction context for each instruction, bypassing any
+    /// transaction-level restrictions and treating each instruction in the
+    /// chain as its own standalone invocation. However, account changes are
+    /// persisted between invocations.
     pub fn process_and_validate_instruction_chain(
         &self,
         instructions: &[(&Instruction, &[Check])],
@@ -1188,23 +1369,53 @@ impl Mollusk {
             accounts,
         );
 
+        let sysvar_cache = self.sysvars.setup_sysvar_cache(accounts);
+
         for (index, (instruction, checks)) in instructions.iter().enumerate() {
             let accounts = &composite_result.resulting_accounts;
 
             let (sanitized_message, transaction_accounts) =
                 crate::compile_accounts::compile_accounts(
-                    instruction,
+                    std::slice::from_ref(instruction),
                     accounts.iter(),
                     &fallback_accounts,
                 );
 
-            let this_result = self.process_instruction_inner(
-                index,
-                instruction,
-                accounts,
+            let mut transaction_context = self.create_transaction_context(transaction_accounts);
+            transaction_context.set_top_level_instruction_index(index);
+
+            let message_result = self.process_transaction_message(
                 &sanitized_message,
-                transaction_accounts,
+                &mut transaction_context,
+                &sysvar_cache,
             );
+
+            let resulting_accounts = if message_result.raw_result.is_ok() {
+                Self::deconstruct_resulting_accounts(&transaction_context, accounts)
+            } else {
+                accounts.to_vec()
+            };
+
+            let raw_result = message_result
+                .raw_result
+                .map_err(MessageResult::extract_ix_err);
+
+            let this_result = InstructionResult {
+                compute_units_consumed: message_result.compute_units_consumed,
+                execution_time: message_result.execution_time,
+                program_result: raw_result.clone().into(),
+                raw_result,
+                return_data: message_result.return_data,
+                resulting_accounts,
+                #[cfg(feature = "inner-instructions")]
+                inner_instructions: message_result
+                    .inner_instructions
+                    .into_iter()
+                    .nth(index)
+                    .unwrap_or_default(),
+                #[cfg(feature = "inner-instructions")]
+                message: message_result.message,
+            };
 
             #[cfg(any(feature = "fuzz", feature = "fuzz-fd"))]
             fuzz::generate_fixtures_from_mollusk_test(self, instruction, accounts, &this_result);
@@ -1219,6 +1430,34 @@ impl Mollusk {
         }
 
         composite_result
+    }
+
+    /// Process multiple instructions using a single shared transaction context,
+    /// then perform checks on the result. Panics if any checks fail.
+    ///
+    /// This API is the closest Mollusk offers to a transaction. All
+    /// instructions are processed in the same message using the same
+    /// transaction context. The result is atomic, meaning resulting accounts
+    /// only reflect the end state of the entire instruction set if all are
+    /// successful. Upon any error, the execution is returned immediately.
+    ///
+    /// The returned result is a `TransactionResult`, containing:
+    ///
+    /// * `compute_units_consumed`: The total compute units consumed across all
+    ///   instructions.
+    /// * `execution_time`: The total execution time across all instructions.
+    /// * `program_result`: The result code of the last program's execution and
+    ///   its index.
+    /// * `resulting_accounts`: The resulting accounts after all instructions.
+    pub fn process_and_validate_transaction_instructions(
+        &self,
+        instructions: &[Instruction],
+        accounts: &[(Pubkey, Account)],
+        checks: &[Check],
+    ) -> TransactionResult {
+        let result = self.process_transaction_instructions(instructions, accounts);
+        result.run_checks(checks, &self.config, self);
+        result
     }
 
     #[cfg(feature = "fuzz")]
