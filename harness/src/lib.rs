@@ -1076,8 +1076,83 @@ impl Mollusk {
         }
     }
 
+    fn process_instruction_chain_element(
+        &self,
+        index: usize,
+        instruction: &Instruction,
+        accounts: &[(Pubkey, Account)],
+        fallback_accounts: &HashMap<Pubkey, Account>,
+        sysvar_cache: &SysvarCache,
+    ) -> InstructionResult {
+        let (sanitized_message, transaction_accounts) = crate::compile_accounts::compile_accounts(
+            std::slice::from_ref(instruction),
+            accounts.iter(),
+            fallback_accounts,
+        );
+
+        let mut transaction_context = self.create_transaction_context(transaction_accounts);
+        transaction_context.set_top_level_instruction_index(index);
+
+        let message_result = self.process_transaction_message(
+            &sanitized_message,
+            &mut transaction_context,
+            sysvar_cache,
+        );
+
+        let resulting_accounts = if message_result.raw_result.is_ok() {
+            Self::deconstruct_resulting_accounts(&transaction_context, accounts)
+        } else {
+            accounts.to_vec()
+        };
+
+        let raw_result = message_result
+            .raw_result
+            .map_err(MessageResult::extract_ix_err);
+
+        let this_result = InstructionResult {
+            compute_units_consumed: message_result.compute_units_consumed,
+            execution_time: message_result.execution_time,
+            program_result: raw_result.clone().into(),
+            raw_result,
+            return_data: message_result.return_data,
+            resulting_accounts,
+            #[cfg(feature = "inner-instructions")]
+            inner_instructions: message_result
+                .inner_instructions
+                .into_iter()
+                .nth(index)
+                .unwrap_or_default(),
+            #[cfg(feature = "inner-instructions")]
+            message: message_result.message,
+        };
+
+        #[cfg(any(feature = "fuzz", feature = "fuzz-fd"))]
+        fuzz::generate_fixtures_from_mollusk_test(self, instruction, accounts, &this_result);
+
+        this_result
+    }
+
     /// Process an instruction using the minified Solana Virtual Machine (SVM)
     /// environment. Simply returns the result.
+    ///
+    /// For `fuzz` feature only:
+    ///
+    /// If the `EJECT_FUZZ_FIXTURES` environment variable is set, this function
+    /// will convert the provided test to a fuzz fixture and write it to the
+    /// provided directory.
+    ///
+    /// ```ignore
+    /// EJECT_FUZZ_FIXTURES="./fuzz-fixtures" cargo test-sbf ...
+    /// ```
+    ///
+    /// You can also provide `EJECT_FUZZ_FIXTURES_JSON` to write the fixture in
+    /// JSON format.
+    ///
+    /// The `fuzz-fd` feature works the same way, but the variables require
+    /// the `_FD` suffix, in case both features are active together
+    /// (ie. `EJECT_FUZZ_FIXTURES_FD`). This will generate Firedancer fuzzing
+    /// fixtures, which are structured a bit differently than Mollusk's own
+    /// protobuf layouts.
     pub fn process_instruction(
         &self,
         instruction: &Instruction,
@@ -1114,7 +1189,7 @@ impl Mollusk {
             .raw_result
             .map_err(MessageResult::extract_ix_err);
 
-        InstructionResult {
+        let result = InstructionResult {
             compute_units_consumed: message_result.compute_units_consumed,
             execution_time: message_result.execution_time,
             program_result: raw_result.clone().into(),
@@ -1129,7 +1204,12 @@ impl Mollusk {
                 .unwrap_or_default(),
             #[cfg(feature = "inner-instructions")]
             message: message_result.message,
-        }
+        };
+
+        #[cfg(any(feature = "fuzz", feature = "fuzz-fd"))]
+        fuzz::generate_fixtures_from_mollusk_test(self, instruction, accounts, &result);
+
+        result
     }
 
     /// Process a chain of instructions using the minified Solana Virtual
@@ -1142,6 +1222,26 @@ impl Mollusk {
     /// * `program_result`: The program result of the _last_ instruction.
     /// * `resulting_accounts`: The resulting accounts after the _last_
     ///   instruction.
+    ///
+    /// For `fuzz` feature only:
+    ///
+    /// Similar to `process_instruction`, if the `EJECT_FUZZ_FIXTURES`
+    /// environment variable is set, this function will convert the provided
+    /// test to a set of fuzz fixtures - each of which corresponds to a single
+    /// instruction in the chain - and write them to the provided directory.
+    ///
+    /// ```ignore
+    /// EJECT_FUZZ_FIXTURES="./fuzz-fixtures" cargo test-sbf ...
+    /// ```
+    ///
+    /// You can also provide `EJECT_FUZZ_FIXTURES_JSON` to write the fixture in
+    /// JSON format.
+    ///
+    /// The `fuzz-fd` feature works the same way, but the variables require
+    /// the `_FD` suffix, in case both features are active together
+    /// (ie. `EJECT_FUZZ_FIXTURES_FD`). This will generate Firedancer fuzzing
+    /// fixtures, which are structured a bit differently than Mollusk's own
+    /// protobuf layouts.
     ///
     /// Note: Unlike `process_transaction_instructions`, this creates a new
     /// transaction context for each instruction, bypassing any
@@ -1167,50 +1267,13 @@ impl Mollusk {
         let sysvar_cache = self.sysvars.setup_sysvar_cache(accounts);
 
         for (index, instruction) in instructions.iter().enumerate() {
-            let accounts = &composite_result.resulting_accounts;
-
-            let (sanitized_message, transaction_accounts) =
-                crate::compile_accounts::compile_accounts(
-                    std::slice::from_ref(instruction),
-                    accounts.iter(),
-                    &fallback_accounts,
-                );
-
-            let mut transaction_context = self.create_transaction_context(transaction_accounts);
-            transaction_context.set_top_level_instruction_index(index);
-
-            let message_result = self.process_transaction_message(
-                &sanitized_message,
-                &mut transaction_context,
+            let this_result = self.process_instruction_chain_element(
+                index,
+                instruction,
+                &composite_result.resulting_accounts,
+                &fallback_accounts,
                 &sysvar_cache,
             );
-
-            let resulting_accounts = if message_result.raw_result.is_ok() {
-                Self::deconstruct_resulting_accounts(&transaction_context, accounts)
-            } else {
-                accounts.to_vec()
-            };
-
-            let raw_result = message_result
-                .raw_result
-                .map_err(MessageResult::extract_ix_err);
-
-            let this_result = InstructionResult {
-                compute_units_consumed: message_result.compute_units_consumed,
-                execution_time: message_result.execution_time,
-                program_result: raw_result.clone().into(),
-                raw_result,
-                return_data: message_result.return_data,
-                resulting_accounts,
-                #[cfg(feature = "inner-instructions")]
-                inner_instructions: message_result
-                    .inner_instructions
-                    .into_iter()
-                    .nth(index)
-                    .unwrap_or_default(),
-                #[cfg(feature = "inner-instructions")]
-                message: message_result.message,
-            };
 
             composite_result.absorb(this_result);
 
@@ -1315,10 +1378,6 @@ impl Mollusk {
         checks: &[Check],
     ) -> InstructionResult {
         let result = self.process_instruction(instruction, accounts);
-
-        #[cfg(any(feature = "fuzz", feature = "fuzz-fd"))]
-        fuzz::generate_fixtures_from_mollusk_test(self, instruction, accounts, &result);
-
         result.run_checks(checks, &self.config, self);
         result
     }
@@ -1372,53 +1431,13 @@ impl Mollusk {
         let sysvar_cache = self.sysvars.setup_sysvar_cache(accounts);
 
         for (index, (instruction, checks)) in instructions.iter().enumerate() {
-            let accounts = &composite_result.resulting_accounts;
-
-            let (sanitized_message, transaction_accounts) =
-                crate::compile_accounts::compile_accounts(
-                    std::slice::from_ref(instruction),
-                    accounts.iter(),
-                    &fallback_accounts,
-                );
-
-            let mut transaction_context = self.create_transaction_context(transaction_accounts);
-            transaction_context.set_top_level_instruction_index(index);
-
-            let message_result = self.process_transaction_message(
-                &sanitized_message,
-                &mut transaction_context,
+            let this_result = self.process_instruction_chain_element(
+                index,
+                instruction,
+                &composite_result.resulting_accounts,
+                &fallback_accounts,
                 &sysvar_cache,
             );
-
-            let resulting_accounts = if message_result.raw_result.is_ok() {
-                Self::deconstruct_resulting_accounts(&transaction_context, accounts)
-            } else {
-                accounts.to_vec()
-            };
-
-            let raw_result = message_result
-                .raw_result
-                .map_err(MessageResult::extract_ix_err);
-
-            let this_result = InstructionResult {
-                compute_units_consumed: message_result.compute_units_consumed,
-                execution_time: message_result.execution_time,
-                program_result: raw_result.clone().into(),
-                raw_result,
-                return_data: message_result.return_data,
-                resulting_accounts,
-                #[cfg(feature = "inner-instructions")]
-                inner_instructions: message_result
-                    .inner_instructions
-                    .into_iter()
-                    .nth(index)
-                    .unwrap_or_default(),
-                #[cfg(feature = "inner-instructions")]
-                message: message_result.message,
-            };
-
-            #[cfg(any(feature = "fuzz", feature = "fuzz-fd"))]
-            fuzz::generate_fixtures_from_mollusk_test(self, instruction, accounts, &this_result);
 
             this_result.run_checks(checks, &self.config, self);
 
