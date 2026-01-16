@@ -18,6 +18,25 @@ impl<'a> MolluskComputeUnitBenchResult<'a> {
     }
 }
 
+pub struct MolluskComputeUnitMatrixBenchResult<'a> {
+    program_name: &'a str,
+    results: Vec<MolluskComputeUnitBenchResult<'a>>,
+}
+
+impl<'a> MolluskComputeUnitMatrixBenchResult<'a> {
+    pub fn new(program_name: &'a str) -> Self {
+        Self {
+            program_name,
+            results: Vec::new(),
+        }
+    }
+
+    pub fn add_result(&mut self, name: &'a str, result: InstructionResult) {
+        self.results
+            .push(MolluskComputeUnitBenchResult::new(name, result))
+    }
+}
+
 pub fn write_results(
     out_dir: &Path,
     table_header: &str,
@@ -109,6 +128,67 @@ fn parse_last_md_table(content: &str) -> Vec<MolluskComputeUnitBenchResult<'_>> 
     }
 
     results
+}
+
+pub fn mx_write_results(
+    out_dir: &Path,
+    table_header: &str,
+    solana_version: &str,
+    results: &[MolluskComputeUnitMatrixBenchResult],
+) {
+    if results.is_empty() {
+        return;
+    }
+    let mut mx_md_table = mx_md_header(table_header, solana_version, results);
+
+    // Determine how many ix there are (based on the first program's results)
+    if let Some(first_program) = results.first() {
+        for (row_idx, first_ix) in first_program.results.iter().enumerate() {
+            // Start row with instruction name
+            mx_md_table.push_str(&format!("| {} ", first_ix.name));
+
+            // Fill columns with CU consumed from each program
+            for program in results {
+                if let Some(ix) = program.results.get(row_idx) {
+                    mx_md_table.push_str(&format!("| {} ", ix.cus_consumed));
+                }
+            }
+
+            // Close the row.
+            mx_md_table.push_str("|\n");
+        }
+        mx_md_table.push('\n');
+    }
+
+    let path = out_dir.join("mx_compute_units.md");
+    prepend_to_md_file(&path, &mx_md_table);
+}
+
+fn mx_md_header(
+    table_header: &str,
+    solana_version: &str,
+    results: &[MolluskComputeUnitMatrixBenchResult],
+) -> String {
+    // Header: | Name | CU (p1) | CU (p2) | ...
+    let mut header_row = String::from("| Name ");
+    for program in results {
+        header_row.push_str(&format!("| CU (`{}`) ", program.program_name));
+    }
+    header_row.push('|');
+
+    // Separator: |----------|----------|----------| ...
+    let separator = "|----------".repeat(results.len() + 1) + "|";
+
+    format!(
+        r#"#### {}
+
+Solana CLI Version: {}
+
+{}
+{}
+"#,
+        table_header, solana_version, header_row, separator
+    )
 }
 
 fn prepend_to_md_file(path: &Path, content: &str) {

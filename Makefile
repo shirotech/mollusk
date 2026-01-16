@@ -31,6 +31,7 @@ build-test-programs:
 	@cargo build-sbf --manifest-path test-programs/custom-syscall/Cargo.toml
 	@cargo build-sbf --manifest-path test-programs/epoch-stake/Cargo.toml
 	@cargo build-sbf --manifest-path test-programs/instructions-sysvar/Cargo.toml
+	@cargo build-sbf --manifest-path test-programs/noop-log/Cargo.toml
 	@cargo build-sbf --manifest-path test-programs/primary/Cargo.toml
 
 # Pre-publish checks
