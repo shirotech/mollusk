@@ -1,7 +1,7 @@
 //! Module for working with Solana sysvars.
 
 use {
-    solana_account::{Account, ReadableAccount},
+    solana_account::{Account, AccountSharedData, ReadableAccount},
     solana_clock::{Clock, Slot},
     solana_epoch_rewards::EpochRewards,
     solana_epoch_schedule::EpochSchedule,
@@ -179,7 +179,10 @@ impl Sysvars {
         }
     }
 
-    pub(crate) fn setup_sysvar_cache(&self, accounts: &[(Pubkey, Account)]) -> SysvarCache {
+    pub(crate) fn setup_sysvar_cache(
+        &self,
+        accounts: &[(Pubkey, AccountSharedData)],
+    ) -> SysvarCache {
         let mut sysvar_cache = SysvarCache::default();
 
         // First fill any sysvar cache entries from the provided accounts.

@@ -1,7 +1,7 @@
 //! Core result types for SVM program execution.
 
 use {
-    solana_account::Account, solana_instruction::error::InstructionError,
+    solana_account::AccountSharedData, solana_instruction::error::InstructionError,
     solana_program_error::ProgramError, solana_pubkey::Pubkey,
     solana_transaction_error::TransactionError,
 };
@@ -64,7 +64,7 @@ pub struct InstructionResult {
     /// This includes all accounts provided to the processor, in the order
     /// they were provided. Any accounts that were modified will maintain
     /// their original position in this list, but with updated state.
-    pub resulting_accounts: Vec<(Pubkey, Account)>,
+    pub resulting_accounts: Vec<(Pubkey, AccountSharedData)>,
     /// Inner instructions (CPIs) invoked during the instruction execution.
     ///
     /// Each entry represents a cross-program invocation made by the program,
@@ -102,7 +102,7 @@ impl Default for InstructionResult {
 
 impl InstructionResult {
     /// Get an account from the resulting accounts by its pubkey.
-    pub fn get_account(&self, pubkey: &Pubkey) -> Option<&Account> {
+    pub fn get_account(&self, pubkey: &Pubkey) -> Option<&AccountSharedData> {
         self.resulting_accounts
             .iter()
             .find(|(k, _)| k == pubkey)
@@ -165,7 +165,7 @@ pub struct TransactionResult {
     /// This includes all accounts provided to the processor, in the order
     /// they were provided. Any accounts that were modified will maintain
     /// their original position in this list, but with updated state.
-    pub resulting_accounts: Vec<(Pubkey, Account)>,
+    pub resulting_accounts: Vec<(Pubkey, AccountSharedData)>,
     /// Inner instructions (CPIs) invoked during the transaction execution.
     ///
     /// Each entry represents a cross-program invocation made by the program,

@@ -1,5 +1,6 @@
 //! Check system for validating individual instruction results.
 
+use solana_account::AccountSharedData;
 #[cfg(feature = "inner-instructions")]
 use solana_transaction_status_client_types::InnerInstruction;
 use {
@@ -7,7 +8,7 @@ use {
         config::{compare, throw, CheckContext, Config},
         types::{InstructionResult, ProgramResult, TransactionProgramResult, TransactionResult},
     },
-    solana_account::{Account, ReadableAccount},
+    solana_account::ReadableAccount,
     solana_instruction::error::InstructionError,
     solana_program_error::ProgramError,
     solana_pubkey::Pubkey,
@@ -188,7 +189,7 @@ fn run_checks<C: CheckContext>(
     execution_time: u64,
     program_result: &ProgramResult,
     return_data: &[u8],
-    resulting_accounts: &[(Pubkey, Account)],
+    resulting_accounts: &[(Pubkey, AccountSharedData)],
     #[cfg(feature = "inner-instructions")] inner_instructions: &[InnerInstruction],
 ) -> bool {
     let c = config;
@@ -260,9 +261,9 @@ fn run_checks<C: CheckContext>(
                                 "account_rent_exempt",
                                 true,
                                 context.is_rent_exempt(
-                                    resulting_account.lamports,
-                                    resulting_account.data.len(),
-                                    resulting_account.owner,
+                                    resulting_account.lamports(),
+                                    resulting_account.data().len(),
+                                    resulting_account.owner(),
                                 ),
                             );
                         }
@@ -290,7 +291,7 @@ fn run_checks<C: CheckContext>(
                     let is_rent_exempt = context.is_rent_exempt(
                         account.lamports(),
                         account.data().len(),
-                        account.owner,
+                        account.owner(),
                     );
                     if !is_rent_exempt {
                         pass &= throw!(

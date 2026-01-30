@@ -31,8 +31,6 @@
 pub mod check;
 pub mod compare;
 pub mod config;
-#[cfg(feature = "fuzz")]
-pub mod fuzz;
 pub mod types;
 
 // Re-export the main types and traits for convenience, and for backwards

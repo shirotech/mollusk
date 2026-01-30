@@ -103,7 +103,3 @@ solana-native-token = { workspace = true }
 solana-secp256k1-program = { workspace = true, features = ["bincode"] }
 solana-secp256r1-program = { workspace = true }
 solana-system-interface = { workspace = true }
-
-[[bench]]
-name = "ips"
-harness = false

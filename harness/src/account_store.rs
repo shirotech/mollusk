@@ -1,6 +1,10 @@
 //! A trait for implementing an account store, to be used with the
 /// `MolluskContext`.
-use {solana_account::Account, solana_pubkey::Pubkey, std::collections::HashMap};
+use {
+    solana_account::{Account, AccountSharedData},
+    solana_pubkey::Pubkey,
+    std::collections::HashMap,
+};
 
 /// A trait for implementing an account store, to be used with the
 /// `MolluskContext`.
@@ -11,18 +15,18 @@ pub trait AccountStore {
     }
 
     /// Get an account at the given public key.
-    fn get_account(&self, pubkey: &Pubkey) -> Option<Account>;
+    fn get_account(&self, pubkey: &Pubkey) -> Option<AccountSharedData>;
 
     /// Store an account at the given public key.
-    fn store_account(&mut self, pubkey: Pubkey, account: Account);
+    fn store_account(&mut self, pubkey: Pubkey, account: AccountSharedData);
 }
 
-impl AccountStore for HashMap<Pubkey, Account> {
-    fn get_account(&self, pubkey: &Pubkey) -> Option<Account> {
+impl AccountStore for HashMap<Pubkey, AccountSharedData> {
+    fn get_account(&self, pubkey: &Pubkey) -> Option<AccountSharedData> {
         self.get(pubkey).cloned()
     }
 
-    fn store_account(&mut self, pubkey: Pubkey, account: Account) {
+    fn store_account(&mut self, pubkey: Pubkey, account: AccountSharedData) {
         self.insert(pubkey, account);
     }
 }
